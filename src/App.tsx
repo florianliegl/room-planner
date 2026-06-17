@@ -1521,21 +1521,21 @@ export default function App() {
         <section className="panel">
           <h2>Files</h2>
           <div className="button-grid">
-            <label className="tool-button" title="Import background image">
+            <label className="tool-button" title="Import a floor plan image as the background layer">
               <ImagePlus size={17} />
               <span>Plan</span>
               <input type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" onChange={handleBackgroundImport} />
             </label>
-            <label className="tool-button" title="Import project JSON">
+            <label className="tool-button" title="Open a saved Room Planner JSON project">
               <FileUp size={17} />
               <span>Open</span>
               <input type="file" accept="application/json,.json" onChange={handleProjectImport} />
             </label>
-            <button className="tool-button" onClick={exportProject} title="Save project JSON">
+            <button className="tool-button" onClick={exportProject} title="Download an editable JSON backup of this plan">
               <Save size={17} />
               <span>Save</span>
             </button>
-            <button className="tool-button" onClick={exportPng} title="Export PNG">
+            <button className="tool-button" onClick={exportPng} title="Export the visible plan as a PNG image">
               <FileDown size={17} />
               <span>PNG</span>
             </button>
@@ -1545,20 +1545,50 @@ export default function App() {
         <section className="panel">
           <h2>Tools</h2>
           <div className="tool-strip">
-            <ToolButton active={tool === "select"} onClick={() => setTool("select")} label="Select" icon={<MousePointer2 />} />
-            <ToolButton active={tool === "pan"} onClick={() => setTool("pan")} label="Pan" icon={<Hand />} />
-            <ToolButton active={tool === "outer"} onClick={() => setTool("outer")} label="Flat outline" icon={<Square />} />
-            <ToolButton active={tool === "wall"} onClick={() => setTool("wall")} label="Inner wall" icon={<MoveHorizontal />} />
-            <ToolButton active={tool === "customRoom"} onClick={() => setTool("customRoom")} label="Manual room" icon={<Pencil />} />
-            <ToolButton active={tool === "scale"} onClick={() => setTool("scale")} label="Scale" icon={<PencilRuler />} />
-            <ToolButton active={tool === "ruler"} onClick={() => setTool("ruler")} label="Ruler" icon={<Ruler />} />
+            <ToolButton
+              active={tool === "select"}
+              onClick={() => setTool("select")}
+              label="Select"
+              tooltip="Select, move, resize, rename, or delete walls, rooms, and objects"
+              icon={<MousePointer2 />}
+            />
+            <ToolButton active={tool === "pan"} onClick={() => setTool("pan")} label="Pan" tooltip="Drag the plan without editing it" icon={<Hand />} />
+            <ToolButton
+              active={tool === "outer"}
+              onClick={() => setTool("outer")}
+              label="Flat outline"
+              tooltip="Click around the outside walls, then close the outline to define the flat"
+              icon={<Square />}
+            />
+            <ToolButton
+              active={tool === "wall"}
+              onClick={() => setTool("wall")}
+              label="Inner wall"
+              tooltip="Draw partition walls; snap to existing walls and use Stop wall to start elsewhere"
+              icon={<MoveHorizontal />}
+            />
+            <ToolButton
+              active={tool === "customRoom"}
+              onClick={() => setTool("customRoom")}
+              label="Manual room"
+              tooltip="Click custom room points when a room is not fully enclosed by walls"
+              icon={<Pencil />}
+            />
+            <ToolButton
+              active={tool === "scale"}
+              onClick={() => setTool("scale")}
+              label="Scale"
+              tooltip="Click two points on a known length, then enter the real length in meters"
+              icon={<PencilRuler />}
+            />
+            <ToolButton active={tool === "ruler"} onClick={() => setTool("ruler")} label="Ruler" tooltip="Measure any distance with a temporary two-point ruler" icon={<Ruler />} />
           </div>
           <div className="toggles">
-            <label>
+            <label title="Show or hide wall and room dimension labels">
               <input type="checkbox" checked={showDimensions} onChange={(event) => setShowDimensions(event.target.checked)} />
               Dimensions
             </label>
-            <label>
+            <label title="Show or hide the background grid">
               <input type="checkbox" checked={showGrid} onChange={(event) => setShowGrid(event.target.checked)} />
               Grid
             </label>
@@ -1569,24 +1599,24 @@ export default function App() {
           </div>
           {draftPoints.length > 0 && (
             <div className="inline-actions">
-              <button onClick={() => setDraftPoints((current) => current.slice(0, -1))}>
+              <button onClick={() => setDraftPoints((current) => current.slice(0, -1))} title="Remove the last point from the current drawing">
                 <Undo2 size={16} />
                 Undo
               </button>
               {tool === "outer" && (
-                <button onClick={finishOuterOutline} disabled={draftPoints.length < 3}>
+                <button onClick={finishOuterOutline} disabled={draftPoints.length < 3} title="Close the outside wall outline">
                   <Square size={16} />
                   Close outline
                 </button>
               )}
               {tool === "wall" && (
-                <button onClick={finishInnerWalls}>
+                <button onClick={finishInnerWalls} title="End this wall chain but keep the Inner wall tool active">
                   <MoveHorizontal size={16} />
                   Stop wall
                 </button>
               )}
               {tool === "customRoom" && (
-                <button onClick={finishCustomRoom} disabled={draftPoints.length < 3}>
+                <button onClick={finishCustomRoom} disabled={draftPoints.length < 3} title="Create a manual room from the clicked points">
                   <Square size={16} />
                   Create room
                 </button>
@@ -1601,7 +1631,7 @@ export default function App() {
             <span>Whole flat area</span>
             <div className="field-row">
               <input value={knownArea} onChange={(event) => setKnownArea(event.target.value)} inputMode="decimal" />
-              <button onClick={applyKnownArea} disabled={outerOutline.length < 3}>
+              <button onClick={applyKnownArea} disabled={outerOutline.length < 3} title="Use the finished flat outline and this real area to calibrate the scale">
                 Set
               </button>
             </div>
@@ -1610,18 +1640,22 @@ export default function App() {
             <span>Known length</span>
             <div className="field-row">
               <input value={knownLength} onChange={(event) => setKnownLength(event.target.value)} inputMode="decimal" />
-              <button onClick={applyKnownLength} disabled={!scaleLine || scaleLineDrafting || distance(scaleLine.a, scaleLine.b) === 0}>
+              <button
+                onClick={applyKnownLength}
+                disabled={!scaleLine || scaleLineDrafting || distance(scaleLine.a, scaleLine.b) === 0}
+                title="Use the red scale line and this real length to calibrate the scale"
+              >
                 Set
               </button>
             </div>
           </label>
           {scaleLine && (
             <div className="inline-actions">
-              <button onClick={clearScaleLine}>
+              <button onClick={clearScaleLine} title="Remove the current scale line">
                 <Trash2 size={16} />
                 Clear scale line
               </button>
-              <button onClick={() => setTool("scale")}>
+              <button onClick={() => setTool("scale")} title="Draw a new two-point scale line">
                 <PencilRuler size={16} />
                 {scaleLineDrafting ? "Pick second point" : "Redraw"}
               </button>
@@ -1637,11 +1671,11 @@ export default function App() {
           </div>
           {rulerLine && (
             <div className="inline-actions">
-              <button onClick={clearRulerLine}>
+              <button onClick={clearRulerLine} title="Remove the current ruler measurement">
                 <Trash2 size={16} />
                 Clear ruler
               </button>
-              <button onClick={() => setTool("ruler")}>
+              <button onClick={() => setTool("ruler")} title="Draw a new two-point ruler measurement">
                 <Ruler size={16} />
                 {rulerLineDrafting ? "Pick second point" : "Redraw"}
               </button>
@@ -1659,7 +1693,7 @@ export default function App() {
             {presets.map((preset) => {
               const Icon = preset.icon;
               return (
-                <button key={preset.type} onClick={() => addObject(preset)} title={preset.label}>
+                <button key={preset.type} onClick={() => addObject(preset)} title={`Add ${preset.label.toLowerCase()} with default dimensions`}>
                   <Icon size={17} />
                   <span>{preset.label}</span>
                 </button>
@@ -1679,19 +1713,19 @@ export default function App() {
             <span>{scaleMPerPx ? `${(1 / scaleMPerPx).toFixed(1)} px/m` : "default sizing"}</span>
           </div>
           <div>
-            <button onClick={() => fitToBackground()} disabled={!background}>
+            <button onClick={() => fitToBackground()} disabled={!background} title="Fit the imported background image into view">
               <Maximize2 size={16} />
               Fit
             </button>
-            <button onClick={resetViewport}>
+            <button onClick={resetViewport} title="Reset zoom and pan">
               <RotateCw size={16} />
               Reset
             </button>
-            <button onClick={deleteWalls}>
+            <button onClick={deleteWalls} title="Remove all outer and inner walls">
               <Trash2 size={16} />
               Clear walls
             </button>
-            <button onClick={exportPng}>
+            <button onClick={exportPng} title="Export the current plan as a PNG image">
               <Download size={16} />
               Export
             </button>
@@ -1849,11 +1883,11 @@ export default function App() {
           </svg>
           {tool === "wall" && draftPoints.length > 0 && (
             <div className="stage-actions">
-              <button onClick={finishInnerWalls}>
+              <button onClick={finishInnerWalls} title="End this wall chain but keep the Inner wall tool active">
                 <MoveHorizontal size={16} />
                 Stop wall
               </button>
-              <button onClick={() => setDraftPoints((current) => current.slice(0, -1))}>
+              <button onClick={() => setDraftPoints((current) => current.slice(0, -1))} title="Remove the last wall point">
                 <Undo2 size={16} />
                 Undo point
               </button>
@@ -1861,11 +1895,11 @@ export default function App() {
           )}
           {tool === "scale" && scaleLine && (
             <div className="stage-actions">
-              <button onClick={clearScaleLine}>
+              <button onClick={clearScaleLine} title="Remove the current scale line">
                 <Trash2 size={16} />
                 Clear scale
               </button>
-              <button onClick={() => setScaleLineDrafting(true)} disabled={scaleLineDrafting}>
+              <button onClick={() => setScaleLineDrafting(true)} disabled={scaleLineDrafting} title="Move the second point of the scale line">
                 <PencilRuler size={16} />
                 {scaleLineDrafting ? "Pick point 2" : "Move point 2"}
               </button>
@@ -1873,11 +1907,11 @@ export default function App() {
           )}
           {tool === "ruler" && rulerLine && (
             <div className="stage-actions">
-              <button onClick={clearRulerLine}>
+              <button onClick={clearRulerLine} title="Remove the current ruler measurement">
                 <Trash2 size={16} />
                 Clear ruler
               </button>
-              <button onClick={() => setRulerLineDrafting(true)} disabled={rulerLineDrafting}>
+              <button onClick={() => setRulerLineDrafting(true)} disabled={rulerLineDrafting} title="Move the second point of the ruler measurement">
                 <Ruler size={16} />
                 {rulerLineDrafting ? "Pick point 2" : "Move point 2"}
               </button>
@@ -1885,16 +1919,20 @@ export default function App() {
           )}
         </div>
         <div className="mobile-dock" aria-label="Mobile planner menus">
-          <button className={mobileDrawer === "tools" ? "active" : ""} onClick={() => setMobileDrawer(mobileDrawer === "tools" ? null : "tools")}>
+          <button className={mobileDrawer === "tools" ? "active" : ""} onClick={() => setMobileDrawer(mobileDrawer === "tools" ? null : "tools")} title="Show or hide drawing tools">
             Tools
           </button>
-          <button className={mobileDrawer === "files" ? "active" : ""} onClick={() => setMobileDrawer(mobileDrawer === "files" ? null : "files")}>
+          <button className={mobileDrawer === "files" ? "active" : ""} onClick={() => setMobileDrawer(mobileDrawer === "files" ? null : "files")} title="Show or hide plan file actions">
             Plan
           </button>
-          <button className={mobileDrawer === "details" ? "active" : ""} onClick={() => setMobileDrawer(mobileDrawer === "details" ? null : "details")}>
+          <button
+            className={mobileDrawer === "details" ? "active" : ""}
+            onClick={() => setMobileDrawer(mobileDrawer === "details" ? null : "details")}
+            title="Show or hide selected item details"
+          >
             Details
           </button>
-          <button onClick={() => setMobileDrawer(null)}>Hide</button>
+          <button onClick={() => setMobileDrawer(null)} title="Hide all mobile panels">Hide</button>
         </div>
       </main>
 
@@ -1909,7 +1947,7 @@ export default function App() {
                 <span>{selectedWall.kind === "outer" ? "Outer wall" : "Inner wall"}</span>
                 <strong>{formatLength(distance(selectedWall.a, selectedWall.b) * effectiveScale)}</strong>
               </div>
-              <button className="danger" onClick={deleteSelectedWall}>
+              <button className="danger" onClick={deleteSelectedWall} title="Delete the selected wall segment">
                 <Trash2 size={16} />
                 Delete wall
               </button>
@@ -1936,6 +1974,7 @@ export default function App() {
                   setRooms((current) => current.filter((room) => room.id !== selectedRoom.id));
                   setSelection(null);
                 }}
+                title="Delete the selected room label and area"
               >
                 <Trash2 size={16} />
                 Delete room
@@ -1981,6 +2020,7 @@ export default function App() {
                   setObjects((current) => current.filter((object) => object.id !== selectedObject.id));
                   setSelection(null);
                 }}
+                title="Delete the selected object"
               >
                 <Trash2 size={16} />
                 Delete object
@@ -2009,7 +2049,7 @@ export default function App() {
           <h2>Rooms</h2>
           <div className="room-list">
             {roomStats.map((room) => (
-              <button key={room.id} onClick={() => setSelection({ kind: "room", id: room.id })}>
+              <button key={room.id} onClick={() => setSelection({ kind: "room", id: room.id })} title={`Select ${room.name}`}>
                 <span>{room.name}</span>
                 <strong>{formatArea(room.area)}</strong>
               </button>
@@ -2024,7 +2064,7 @@ export default function App() {
             <span>Status</span>
             <strong>{hydrated ? "Autosaved" : "Loading"}</strong>
           </div>
-          <button className="danger" onClick={clearAutosavedPlan}>
+          <button className="danger" onClick={clearAutosavedPlan} title="Clear the browser autosave and reset the current plan">
             <Trash2 size={16} />
             Clear saved plan
           </button>
@@ -2065,15 +2105,17 @@ function ToolButton({
   active,
   icon,
   label,
+  tooltip,
   onClick,
 }: {
   active: boolean;
   icon: React.ReactElement;
   label: string;
+  tooltip?: string;
   onClick: () => void;
 }) {
   return (
-    <button className={active ? "active" : ""} onClick={onClick} title={label} aria-label={label}>
+    <button className={active ? "active" : ""} onClick={onClick} title={tooltip ?? label} aria-label={label}>
       {React.cloneElement(icon, { size: 18 } as { size: number })}
       <span>{label}</span>
     </button>
