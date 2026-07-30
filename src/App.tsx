@@ -15,6 +15,7 @@ import {
   Pencil,
   PencilRuler,
   Plus,
+  Printer,
   RotateCw,
   Ruler,
   Save,
@@ -24,9 +25,16 @@ import {
   Undo2,
 } from "lucide-react";
 import React from "react";
-import { ChangeEvent, PointerEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, lazy, PointerEvent, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { createMetricPlan, furnitureDefaults } from "./metricPlan";
+import {
+  defaultConstructionSettings,
+  type ConstructionSettings,
+  type Furniture,
+  type Point,
+  type WallSegment,
+} from "./plannerTypes";
 
-type Point = { x: number; y: number };
 type Tool = "select" | "pan" | "outer" | "wall" | "customRoom" | "scale" | "ruler";
 type Selection = { kind: "room" | "object" | "wall"; id: string } | null;
 
@@ -38,25 +46,6 @@ type Room = {
   wallSeed?: Point;
 };
 
-type WallSegment = {
-  id: string;
-  a: Point;
-  b: Point;
-  kind: "outer" | "inner";
-};
-
-type Furniture = {
-  id: string;
-  type: string;
-  label: string;
-  x: number;
-  y: number;
-  widthM: number;
-  heightM: number;
-  rotation: number;
-  color: string;
-};
-
 type Background = {
   dataUrl: string;
   name: string;
@@ -66,7 +55,7 @@ type Background = {
 };
 
 type ProjectFile = {
-  roomPlannerVersion: 1;
+  roomPlannerVersion: 1 | 2;
   background: Background | null;
   scaleMPerPx: number | null;
   scaleSource: string;
@@ -75,6 +64,7 @@ type ProjectFile = {
   innerWalls?: WallSegment[];
   rooms: Room[];
   objects: Furniture[];
+  construction?: ConstructionSettings;
   view: Viewport;
 };
 
@@ -115,6 +105,8 @@ const defaultScaleMPerPx = 0.02;
 const colors = ["#2563eb", "#16a34a", "#dc2626", "#ca8a04", "#7c3aed", "#0891b2"];
 const pointEps = 0.75;
 const autosaveKey = "room-planner-autosave-v1";
+const ThreeDView = lazy(() => import("./ThreeDView"));
+const PrintExportDialog = lazy(() => import("./PrintExportDialog"));
 
 const presets = [
   { type: "bed", label: "Bed", widthM: 2, heightM: 1.6, color: "#7c3aed", icon: BedDouble },
@@ -129,6 +121,13 @@ const presets = [
   { type: "appliance", label: "Appliance", widthM: 0.65, heightM: 0.65, color: "#334155", icon: Box },
   { type: "custom", label: "Custom", widthM: 1, heightM: 1, color: "#111827", icon: Plus },
 ];
+
+function normalizeFurniture(objects: Array<Partial<Furniture> & Pick<Furniture, "id" | "type" | "label" | "x" | "y" | "widthM" | "heightM" | "rotation" | "color">>) {
+  return objects.map((object) => ({
+    ...furnitureDefaults(object.type),
+    ...object,
+  })) as Furniture[];
+}
 
 function uid(prefix: string) {
   return `${prefix}-${Math.random().toString(36).slice(2, 9)}`;
@@ -516,6 +515,9 @@ export default function App() {
   const [showDimensions, setShowDimensions] = useState(true);
   const [showGrid, setShowGrid] = useState(true);
   const [wallSnapEnabled, setWallSnapEnabled] = useState(true);
+  const [construction, setConstruction] = useState<ConstructionSettings>(defaultConstructionSettings);
+  const [workspaceMode, setWorkspaceMode] = useState<"2d" | "3d">("2d");
+  const [printDialogOpen, setPrintDialogOpen] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const [mobileDrawer, setMobileDrawer] = useState<MobileDrawer>(null);
 
@@ -526,6 +528,10 @@ export default function App() {
   const snappedObjects = useMemo(
     () => objects.map((object) => snapOpeningToWall(object, allWalls, openingSnapDistance)),
     [objects, allWalls, openingSnapDistance],
+  );
+  const metricPlan = useMemo(
+    () => createMetricPlan(outerOutline, allWalls, snappedObjects, effectiveScale, construction),
+    [outerOutline, allWalls, snappedObjects, effectiveScale, construction],
   );
   const openingProjections = useMemo(
     () =>
@@ -602,7 +608,7 @@ export default function App() {
   };
 
   const projectSnapshot = (): ProjectFile => ({
-    roomPlannerVersion: 1,
+    roomPlannerVersion: 2,
     background,
     scaleMPerPx,
     scaleSource,
@@ -611,6 +617,7 @@ export default function App() {
     innerWalls,
     rooms,
     objects,
+    construction,
     view: viewport,
   });
 
@@ -662,7 +669,7 @@ export default function App() {
 
     try {
       const project = JSON.parse(saved) as ProjectFile;
-      if (project.roomPlannerVersion === 1) {
+      if (project.roomPlannerVersion === 1 || project.roomPlannerVersion === 2) {
         setBackground(project.background);
         setScaleMPerPx(project.scaleMPerPx);
         setScaleSource(project.scaleSource);
@@ -670,7 +677,8 @@ export default function App() {
         setOuterOutline(project.outerOutline ?? []);
         setInnerWalls(project.innerWalls ?? []);
         setRooms(repairDefaultRoomIdentities(project.rooms));
-        setObjects(project.objects);
+        setObjects(normalizeFurniture(project.objects));
+        setConstruction(project.construction ?? defaultConstructionSettings);
         setViewport(project.view);
       }
     } catch {
@@ -683,7 +691,7 @@ export default function App() {
   useEffect(() => {
     if (!hydrated) return;
     window.localStorage.setItem(autosaveKey, JSON.stringify(projectSnapshot()));
-  }, [hydrated, background, scaleMPerPx, scaleSource, wallSnapEnabled, outerOutline, innerWalls, rooms, objects, viewport]);
+  }, [hydrated, background, scaleMPerPx, scaleSource, wallSnapEnabled, outerOutline, innerWalls, rooms, objects, construction, viewport]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -804,7 +812,7 @@ export default function App() {
     const reader = new FileReader();
     reader.onload = () => {
       const project = JSON.parse(String(reader.result)) as ProjectFile;
-      if (project.roomPlannerVersion !== 1) {
+      if (project.roomPlannerVersion !== 1 && project.roomPlannerVersion !== 2) {
         window.alert("Unsupported project file.");
         return;
       }
@@ -816,7 +824,9 @@ export default function App() {
       setInnerWalls(project.innerWalls ?? []);
       const repairedRooms = repairDefaultRoomIdentities(project.rooms);
       setRooms(repairedRooms);
-      setObjects(project.objects);
+      const normalizedObjects = normalizeFurniture(project.objects);
+      setObjects(normalizedObjects);
+      setConstruction(project.construction ?? defaultConstructionSettings);
       setViewport(project.view);
       setDraftPoints([]);
       setPointerWorld(null);
@@ -826,7 +836,7 @@ export default function App() {
       window.localStorage.setItem(
         autosaveKey,
         JSON.stringify({
-          roomPlannerVersion: 1,
+          roomPlannerVersion: 2,
           background: project.background,
           scaleMPerPx: project.scaleMPerPx,
           scaleSource: project.scaleSource,
@@ -834,7 +844,8 @@ export default function App() {
           outerOutline: project.outerOutline ?? [],
           innerWalls: project.innerWalls ?? [],
           rooms: repairedRooms,
-          objects: project.objects,
+          objects: normalizedObjects,
+          construction: project.construction ?? defaultConstructionSettings,
           view: project.view,
         } satisfies ProjectFile),
       );
@@ -965,6 +976,7 @@ export default function App() {
 
   const addObject = (preset: (typeof presets)[number]) => {
     const center = screenToWorld({ x: stageSize.width / 2, y: stageSize.height / 2 });
+    const modelDefaults = furnitureDefaults(preset.type);
     const object = snapOpeningToWall(
       {
         id: uid("object"),
@@ -974,6 +986,7 @@ export default function App() {
         y: center.y,
         widthM: preset.widthM,
         heightM: preset.heightM,
+        ...modelDefaults,
         rotation: 0,
         color: preset.color,
       },
@@ -1473,6 +1486,7 @@ export default function App() {
     setInnerWalls([]);
     setRooms([]);
     setObjects([]);
+    setConstruction(defaultConstructionSettings);
     setDraftPoints([]);
     setPointerWorld(null);
     setScaleLine(null);
@@ -1538,6 +1552,10 @@ export default function App() {
             <button className="tool-button" onClick={exportPng} title="Export the visible plan as a PNG image">
               <FileDown size={17} />
               <span>PNG</span>
+            </button>
+            <button className="tool-button" onClick={() => setPrintDialogOpen(true)} title="Create a printable 3MF or STL model">
+              <Printer size={17} />
+              <span>3D Print</span>
             </button>
           </div>
         </section>
@@ -1713,11 +1731,15 @@ export default function App() {
             <span>{scaleMPerPx ? `${(1 / scaleMPerPx).toFixed(1)} px/m` : "default sizing"}</span>
           </div>
           <div>
-            <button onClick={() => fitToBackground()} disabled={!background} title="Fit the imported background image into view">
+            <div className="view-switch" aria-label="Workspace view">
+              <button className={workspaceMode === "2d" ? "active" : ""} onClick={() => setWorkspaceMode("2d")}>2D</button>
+              <button className={workspaceMode === "3d" ? "active" : ""} onClick={() => setWorkspaceMode("3d")}>3D</button>
+            </div>
+            <button onClick={() => fitToBackground()} disabled={!background || workspaceMode === "3d"} title="Fit the imported background image into view">
               <Maximize2 size={16} />
               Fit
             </button>
-            <button onClick={resetViewport} title="Reset zoom and pan">
+            <button onClick={resetViewport} disabled={workspaceMode === "3d"} title="Reset zoom and pan">
               <RotateCw size={16} />
               Reset
             </button>
@@ -1725,13 +1747,18 @@ export default function App() {
               <Trash2 size={16} />
               Clear walls
             </button>
-            <button onClick={exportPng} title="Export the current plan as a PNG image">
+            <button onClick={() => setPrintDialogOpen(true)} title="Create a printable 3MF or STL model">
+              <Printer size={16} />
+              3D Print
+            </button>
+            <button onClick={exportPng} disabled={workspaceMode === "3d"} title="Export the current plan as a PNG image">
               <Download size={16} />
-              Export
+              PNG
             </button>
           </div>
         </div>
 
+        {workspaceMode === "2d" ? (
         <div className="stage" ref={stageRef} onWheel={handleWheel}>
           <canvas ref={canvasRef} className="background-canvas" />
           <svg
@@ -1918,6 +1945,20 @@ export default function App() {
             </div>
           )}
         </div>
+        ) : (
+          <div className="stage stage-3d">
+            <Suspense fallback={<div className="three-loading">Preparing 3D view…</div>}>
+              <ThreeDView
+                plan={metricPlan}
+                selectedObjectId={selection?.kind === "object" ? selection.id : null}
+                onSelectObject={(id) => {
+                  setSelection({ kind: "object", id });
+                  setMobileDrawer("details");
+                }}
+              />
+            </Suspense>
+          </div>
+        )}
         <div className="mobile-dock" aria-label="Mobile planner menus">
           <button className={mobileDrawer === "tools" ? "active" : ""} onClick={() => setMobileDrawer(mobileDrawer === "tools" ? null : "tools")} title="Show or hide drawing tools">
             Tools
@@ -2011,6 +2052,36 @@ export default function App() {
                 </label>
               </div>
               <label className="field">
+                <span>{isWallOpening(selectedObject) ? "Opening height m" : "Model height m"}</span>
+                <input
+                  value={isWallOpening(selectedObject) ? selectedObject.openingHeightM ?? selectedObject.modelHeightM : selectedObject.modelHeightM}
+                  type="number"
+                  min="0.05"
+                  step="0.01"
+                  onChange={(event) => {
+                    const value = Number(event.target.value);
+                    updateObject(
+                      selectedObject.id,
+                      isWallOpening(selectedObject)
+                        ? { openingHeightM: value, modelHeightM: value }
+                        : { modelHeightM: value },
+                    );
+                  }}
+                />
+              </label>
+              {selectedObject.type === "window" && (
+                <label className="field">
+                  <span>Window sill height m</span>
+                  <input
+                    value={selectedObject.openingBottomM ?? 0.9}
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    onChange={(event) => updateObject(selectedObject.id, { openingBottomM: Number(event.target.value) })}
+                  />
+                </label>
+              )}
+              <label className="field">
                 <span>Color</span>
                 <input type="color" value={selectedObject.color} onChange={(event) => updateObject(selectedObject.id, { color: event.target.value })} />
               </label>
@@ -2027,6 +2098,43 @@ export default function App() {
               </button>
             </div>
           )}
+        </section>
+
+        <section className="panel">
+          <h2>3D Construction</h2>
+          <label className="field">
+            <span>Wall height m</span>
+            <input
+              type="number"
+              min="0.2"
+              step="0.05"
+              value={construction.wallHeightM}
+              onChange={(event) => setConstruction((current) => ({ ...current, wallHeightM: Math.max(0.2, Number(event.target.value)) }))}
+            />
+          </label>
+          <div className="two-col">
+            <label className="field">
+              <span>Outer wall m</span>
+              <input
+                type="number"
+                min="0.02"
+                step="0.01"
+                value={construction.outerWallThicknessM}
+                onChange={(event) => setConstruction((current) => ({ ...current, outerWallThicknessM: Math.max(0.02, Number(event.target.value)) }))}
+              />
+            </label>
+            <label className="field">
+              <span>Inner wall m</span>
+              <input
+                type="number"
+                min="0.02"
+                step="0.01"
+                value={construction.innerWallThicknessM}
+                onChange={(event) => setConstruction((current) => ({ ...current, innerWallThicknessM: Math.max(0.02, Number(event.target.value)) }))}
+              />
+            </label>
+          </div>
+          <p className="empty">Used by the live 3D view and real-thickness print exports.</p>
         </section>
 
         <section className="panel">
@@ -2097,6 +2205,11 @@ export default function App() {
           )}
         </section>
       </aside>
+      {printDialogOpen && (
+        <Suspense fallback={<div className="modal-backdrop"><div className="three-loading">Preparing print tools…</div></div>}>
+          <PrintExportDialog plan={metricPlan} calibrated={Boolean(scaleMPerPx)} onClose={() => setPrintDialogOpen(false)} />
+        </Suspense>
+      )}
     </div>
   );
 }

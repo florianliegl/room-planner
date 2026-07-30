@@ -14,6 +14,12 @@ The app is intended for quick apartment and room layout planning: draw the outsi
 - Place common furniture and openings such as beds, sofas, tables, doors, and windows.
 - Move, resize, rotate, rename, and recolor objects.
 - Doors and windows snap to nearby walls and fade the wall segment behind them.
+- Switch to a live 3D view with orbit controls, camera presets, and an eye-level walkthrough.
+- Configure real wall height and separate outer/inner wall thicknesses.
+- Preview simple procedural 3D furniture and true door/window openings.
+- Export print-ready 3MF or STL models with automatic bed fitting or an exact manual scale.
+- Choose low-profile or scaled-height walls, real or material-saving thickness, floor/no floor, and loose or fused furniture.
+- Automatically split oversized prints into named parts with adjustable friction-fit tongue-and-slot connectors.
 - Autosave the current project in the browser.
 - Save/load editable project JSON and export the current plan as PNG.
 
@@ -58,6 +64,8 @@ npm run preview
 5. Double-click inside an enclosed area to create a room. Room areas update when the walls move.
 6. Add furniture from the object presets, then drag, resize, or rotate it on the plan.
 7. Use **Save** for editable JSON backups and **PNG** or **Export** for an image.
+8. Switch the workspace to **3D** to orbit around the plan or enter walkthrough mode.
+9. Choose **3D Print** to select the bed, scale, wall, floor, furniture, connector, and output-format settings.
 
 ## License
 

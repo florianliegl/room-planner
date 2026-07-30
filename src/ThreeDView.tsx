@@ -1,0 +1,444 @@
+import { useEffect, useRef, useState } from "react";
+import * as THREE from "three";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { PointerLockControls } from "three/examples/jsm/controls/PointerLockControls.js";
+import type { Furniture, MetricPlan, Point, WallSegment } from "./plannerTypes";
+
+type Props = {
+  plan: MetricPlan;
+  selectedObjectId: string | null;
+  onSelectObject: (id: string) => void;
+};
+
+function wallLength(wall: WallSegment) {
+  return Math.hypot(wall.b.x - wall.a.x, wall.b.y - wall.a.y);
+}
+
+function createBox(
+  width: number,
+  height: number,
+  depth: number,
+  color: string,
+  x = 0,
+  y = height / 2,
+  z = 0,
+  opacity = 1,
+) {
+  const material = new THREE.MeshStandardMaterial({
+    color,
+    roughness: 0.72,
+    transparent: opacity < 1,
+    opacity,
+  });
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(Math.max(0.001, width), Math.max(0.001, height), Math.max(0.001, depth)), material);
+  mesh.position.set(x, y, z);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  return mesh;
+}
+
+function addWallBox(group: THREE.Group, wall: WallSegment, start: number, end: number, bottom: number, top: number, thickness: number, color: string) {
+  if (end - start < 0.002 || top - bottom < 0.002) return;
+  const length = wallLength(wall);
+  if (!length) return;
+  const ux = (wall.b.x - wall.a.x) / length;
+  const uz = (wall.b.y - wall.a.y) / length;
+  const center = (start + end) / 2;
+  const mesh = createBox(end - start, top - bottom, thickness, color, 0, bottom + (top - bottom) / 2);
+  mesh.position.x = wall.a.x + ux * center;
+  mesh.position.z = wall.a.y + uz * center;
+  mesh.rotation.y = -Math.atan2(uz, ux);
+  group.add(mesh);
+}
+
+function buildWalls(plan: MetricPlan) {
+  const group = new THREE.Group();
+  plan.walls.forEach((wall) => {
+    const length = wallLength(wall);
+    const thickness = wall.kind === "outer" ? plan.settings.outerWallThicknessM : plan.settings.innerWallThicknessM;
+    const color = wall.kind === "outer" ? "#e2e8f0" : "#f1f5f9";
+    const wallOpenings = plan.openings
+      .filter((opening) => opening.wallId === wall.id)
+      .map((opening) => {
+        const ux = (wall.b.x - wall.a.x) / Math.max(length, 0.001);
+        const uz = (wall.b.y - wall.a.y) / Math.max(length, 0.001);
+        const center = (opening.centerM.x - wall.a.x) * ux + (opening.centerM.y - wall.a.y) * uz;
+        return {
+          start: Math.max(0, center - opening.widthM / 2),
+          end: Math.min(length, center + opening.widthM / 2),
+          bottom: Math.max(0, opening.bottomM),
+          top: Math.min(plan.settings.wallHeightM, opening.bottomM + opening.heightM),
+        };
+      })
+      .filter((opening) => opening.end > opening.start && opening.top > opening.bottom);
+
+    const cuts = [...new Set([0, length, ...wallOpenings.flatMap((opening) => [opening.start, opening.end])])].sort((a, b) => a - b);
+    for (let index = 0; index < cuts.length - 1; index += 1) {
+      const start = cuts[index];
+      const end = cuts[index + 1];
+      const center = (start + end) / 2;
+      const covering = wallOpenings.filter((opening) => center > opening.start - 0.0001 && center < opening.end + 0.0001);
+      if (!covering.length) {
+        addWallBox(group, wall, start, end, 0, plan.settings.wallHeightM, thickness, color);
+      } else {
+        const bottom = Math.min(...covering.map((opening) => opening.bottom));
+        const top = Math.max(...covering.map((opening) => opening.top));
+        addWallBox(group, wall, start, end, 0, bottom, thickness, color);
+        addWallBox(group, wall, start, end, top, plan.settings.wallHeightM, thickness, color);
+      }
+    }
+  });
+  return group;
+}
+
+function furnitureMaterial(color: string) {
+  return new THREE.MeshStandardMaterial({ color, roughness: 0.65 });
+}
+
+function tagObject(group: THREE.Object3D, id: string) {
+  group.traverse((child) => {
+    child.userData.objectId = id;
+  });
+}
+
+function buildFurnitureModel(object: Furniture, selected: boolean) {
+  const group = new THREE.Group();
+  const w = Math.max(0.1, object.widthM);
+  const d = Math.max(0.1, object.heightM);
+  const h = Math.max(0.08, object.modelHeightM);
+  const color = selected ? "#f59e0b" : object.color;
+  const add = (mesh: THREE.Mesh) => group.add(mesh);
+
+  if (object.type === "bed") {
+    add(createBox(w, h * 0.35, d, color, 0, h * 0.175));
+    add(createBox(w, h * 0.12, d * 0.9, "#f8fafc", 0, h * 0.43));
+    add(createBox(w, h * 0.75, d * 0.08, color, 0, h * 0.375, -d * 0.46));
+  } else if (object.type === "sofa") {
+    add(createBox(w, h * 0.45, d, color, 0, h * 0.225));
+    add(createBox(w, h * 0.55, d * 0.18, color, 0, h * 0.62, -d * 0.4));
+    add(createBox(w * 0.12, h * 0.55, d, color, -w * 0.44, h * 0.36));
+    add(createBox(w * 0.12, h * 0.55, d, color, w * 0.44, h * 0.36));
+  } else if (object.type === "table" || object.type === "desk") {
+    add(createBox(w, h * 0.1, d, color, 0, h * 0.95));
+    const legMaterial = furnitureMaterial(color);
+    [-1, 1].forEach((sx) => [-1, 1].forEach((sz) => {
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(w * 0.08, h * 0.9, d * 0.08), legMaterial);
+      leg.position.set(sx * w * 0.4, h * 0.45, sz * d * 0.4);
+      leg.castShadow = true;
+      add(leg);
+    }));
+  } else if (object.type === "chair") {
+    add(createBox(w, h * 0.12, d, color, 0, h * 0.5));
+    add(createBox(w, h * 0.48, d * 0.12, color, 0, h * 0.76, -d * 0.44));
+    [-1, 1].forEach((sx) => [-1, 1].forEach((sz) => add(createBox(w * 0.1, h * 0.5, d * 0.1, color, sx * w * 0.4, h * 0.25, sz * d * 0.4))));
+  } else if (object.type === "shelf") {
+    add(createBox(w, h, d * 0.18, color, 0, h / 2, -d * 0.4));
+    for (let level = 0; level < 4; level += 1) add(createBox(w, h * 0.035, d, color, 0, (h * level) / 3));
+  } else {
+    add(createBox(w, h, d, color));
+  }
+
+  group.position.set(object.x, 0, object.y);
+  group.rotation.y = (-object.rotation * Math.PI) / 180;
+  tagObject(group, object.id);
+  return group;
+}
+
+function buildOpenings(plan: MetricPlan) {
+  const group = new THREE.Group();
+  plan.openings.forEach((opening) => {
+    const source = plan.furniture.find((item) => item.id === opening.objectId);
+    if (!source) return;
+    if (opening.type === "door") {
+      const leaf = createBox(opening.widthM * 0.96, opening.heightM * 0.96, 0.045, source.color, 0, opening.heightM * 0.48);
+      leaf.position.x = opening.centerM.x;
+      leaf.position.z = opening.centerM.y;
+      leaf.rotation.y = (-opening.rotation * Math.PI) / 180;
+      tagObject(leaf, source.id);
+      group.add(leaf);
+    } else {
+      const pane = createBox(opening.widthM * 0.92, opening.heightM * 0.9, 0.03, "#7dd3fc", 0, opening.bottomM + opening.heightM / 2, 0, 0.48);
+      pane.position.x = opening.centerM.x;
+      pane.position.z = opening.centerM.y;
+      pane.rotation.y = (-opening.rotation * Math.PI) / 180;
+      tagObject(pane, source.id);
+      group.add(pane);
+    }
+  });
+  return group;
+}
+
+function pointSegmentDistance(point: Point, wall: WallSegment) {
+  const dx = wall.b.x - wall.a.x;
+  const dy = wall.b.y - wall.a.y;
+  const lengthSquared = dx * dx + dy * dy;
+  const t = lengthSquared ? Math.max(0, Math.min(1, ((point.x - wall.a.x) * dx + (point.y - wall.a.y) * dy) / lengthSquared)) : 0;
+  return { distance: Math.hypot(point.x - (wall.a.x + dx * t), point.y - (wall.a.y + dy * t)), t };
+}
+
+function canWalkTo(plan: MetricPlan, point: Point) {
+  return !plan.walls.some((wall) => {
+    const hit = pointSegmentDistance(point, wall);
+    const thickness = wall.kind === "outer" ? plan.settings.outerWallThicknessM : plan.settings.innerWallThicknessM;
+    if (hit.distance > thickness / 2 + 0.18) return false;
+    const length = wallLength(wall);
+    const along = hit.t * length;
+    const hasDoor = plan.openings.some((opening) => {
+      if (opening.wallId !== wall.id || opening.type !== "door") return false;
+      const ux = (wall.b.x - wall.a.x) / Math.max(length, 0.001);
+      const uz = (wall.b.y - wall.a.y) / Math.max(length, 0.001);
+      const center = (opening.centerM.x - wall.a.x) * ux + (opening.centerM.y - wall.a.y) * uz;
+      return Math.abs(along - center) < opening.widthM / 2 - 0.08;
+    });
+    return !hasDoor;
+  });
+}
+
+export default function ThreeDView({ plan, selectedObjectId, onSelectObject }: Props) {
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const planRef = useRef(plan);
+  const selectRef = useRef(onSelectObject);
+  const movementRef = useRef(new Set<string>());
+  const modeRef = useRef<"orbit" | "walk">("orbit");
+  const [mode, setMode] = useState<"orbit" | "walk">("orbit");
+  const [error, setError] = useState("");
+  const runtimeRef = useRef<{
+    scene: THREE.Scene;
+    camera: THREE.PerspectiveCamera;
+    orbit: OrbitControls;
+    pointer: PointerLockControls;
+    content: THREE.Group;
+  } | null>(null);
+
+  planRef.current = plan;
+  selectRef.current = onSelectObject;
+  modeRef.current = mode;
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    let renderer: THREE.WebGLRenderer;
+    try {
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+    } catch {
+      setError("3D view needs WebGL. The 2D planner is still available.");
+      return;
+    }
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFShadowMap;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    host.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color("#dbeafe");
+    scene.fog = new THREE.Fog("#dbeafe", 35, 90);
+    const camera = new THREE.PerspectiveCamera(55, 1, 0.05, 200);
+    const centerX = plan.boundsM.width / 2;
+    const centerZ = plan.boundsM.depth / 2;
+    const size = Math.max(plan.boundsM.width, plan.boundsM.depth, 4);
+    camera.position.set(centerX + size * 0.85, size * 0.75, centerZ + size * 0.85);
+
+    const orbit = new OrbitControls(camera, renderer.domElement);
+    orbit.target.set(centerX, 0.7, centerZ);
+    orbit.enableDamping = true;
+    orbit.maxPolarAngle = Math.PI / 2 - 0.02;
+    orbit.minDistance = 0.5;
+    orbit.maxDistance = Math.max(20, size * 5);
+    orbit.update();
+    const pointer = new PointerLockControls(camera, renderer.domElement);
+
+    scene.add(new THREE.HemisphereLight("#ffffff", "#64748b", 1.55));
+    const sunlight = new THREE.DirectionalLight("#fff7ed", 2.1);
+    sunlight.position.set(-8, 14, 7);
+    sunlight.castShadow = true;
+    sunlight.shadow.mapSize.set(2048, 2048);
+    scene.add(sunlight);
+    const ground = createBox(Math.max(40, size * 4), 0.04, Math.max(40, size * 4), "#cbd5e1", centerX, -0.04, centerZ);
+    scene.add(ground);
+    const grid = new THREE.GridHelper(Math.max(40, size * 4), 80, "#94a3b8", "#cbd5e1");
+    grid.position.set(centerX, 0, centerZ);
+    scene.add(grid);
+    const content = new THREE.Group();
+    scene.add(content);
+    runtimeRef.current = { scene, camera, orbit, pointer, content };
+
+    const raycaster = new THREE.Raycaster();
+    const pointerPosition = new THREE.Vector2();
+    const selectAt = (event: MouseEvent) => {
+      if (modeRef.current === "walk") {
+        if (!pointer.isLocked) pointer.lock();
+        return;
+      }
+      const rect = renderer.domElement.getBoundingClientRect();
+      pointerPosition.set(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1);
+      raycaster.setFromCamera(pointerPosition, camera);
+      const match = raycaster.intersectObjects(content.children, true).find((hit) => hit.object.userData.objectId);
+      if (match) selectRef.current(String(match.object.userData.objectId));
+    };
+    renderer.domElement.addEventListener("dblclick", selectAt);
+
+    const onKeyDown = (event: KeyboardEvent) => movementRef.current.add(event.key.toLowerCase());
+    const onKeyUp = (event: KeyboardEvent) => movementRef.current.delete(event.key.toLowerCase());
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+
+    let previous = performance.now();
+    let animationId = 0;
+    const animate = (now: number) => {
+      const delta = Math.min(0.05, (now - previous) / 1000);
+      previous = now;
+      if (modeRef.current === "orbit") {
+        orbit.update();
+      } else {
+        const keys = movementRef.current;
+        const speed = 2.4 * delta;
+        const direction = new THREE.Vector3();
+        camera.getWorldDirection(direction);
+        direction.y = 0;
+        direction.normalize();
+        const right = new THREE.Vector3(-direction.z, 0, direction.x);
+        const movement = new THREE.Vector3();
+        if (keys.has("w") || keys.has("arrowup") || keys.has("forward")) movement.add(direction);
+        if (keys.has("s") || keys.has("arrowdown") || keys.has("back")) movement.sub(direction);
+        if (keys.has("a")) movement.sub(right);
+        if (keys.has("d")) movement.add(right);
+        if (keys.has("left")) camera.rotation.y += 1.7 * delta;
+        if (keys.has("right")) camera.rotation.y -= 1.7 * delta;
+        if (movement.lengthSq()) {
+          movement.normalize().multiplyScalar(speed);
+          const candidate = camera.position.clone().add(movement);
+          if (canWalkTo(planRef.current, { x: candidate.x, y: candidate.z })) camera.position.copy(candidate);
+        }
+        camera.position.y = 1.65;
+      }
+      renderer.render(scene, camera);
+      animationId = requestAnimationFrame(animate);
+    };
+    animationId = requestAnimationFrame(animate);
+
+    const resize = () => {
+      const rect = host.getBoundingClientRect();
+      renderer.setSize(Math.max(1, rect.width), Math.max(1, rect.height), false);
+      camera.aspect = Math.max(1, rect.width) / Math.max(1, rect.height);
+      camera.updateProjectionMatrix();
+    };
+    const observer = new ResizeObserver(resize);
+    observer.observe(host);
+    resize();
+
+    return () => {
+      cancelAnimationFrame(animationId);
+      observer.disconnect();
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      renderer.domElement.removeEventListener("dblclick", selectAt);
+      pointer.disconnect();
+      orbit.dispose();
+      renderer.dispose();
+      renderer.domElement.remove();
+      runtimeRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const runtime = runtimeRef.current;
+    if (!runtime) return;
+    runtime.content.traverse((child) => {
+      if (child instanceof THREE.Mesh) {
+        child.geometry.dispose();
+        const materials = Array.isArray(child.material) ? child.material : [child.material];
+        materials.forEach((material) => material.dispose());
+      }
+    });
+    runtime.content.clear();
+
+    if (plan.outlineM.length >= 3) {
+      const shape = new THREE.Shape();
+      shape.moveTo(plan.outlineM[0].x, plan.outlineM[0].y);
+      plan.outlineM.slice(1).forEach((point) => shape.lineTo(point.x, point.y));
+      shape.closePath();
+      const floor = new THREE.Mesh(new THREE.ShapeGeometry(shape), new THREE.MeshStandardMaterial({ color: "#f8fafc", roughness: 0.9 }));
+      floor.rotation.x = Math.PI / 2;
+      floor.receiveShadow = true;
+      runtime.content.add(floor);
+    }
+    runtime.content.add(buildWalls(plan));
+    runtime.content.add(buildOpenings(plan));
+    plan.furniture
+      .filter((object) => object.type !== "door" && object.type !== "window")
+      .forEach((object) => runtime.content.add(buildFurnitureModel(object, object.id === selectedObjectId)));
+  }, [plan, selectedObjectId]);
+
+  const setCameraPreset = (preset: "top" | "iso" | "reset") => {
+    const runtime = runtimeRef.current;
+    if (!runtime) return;
+    const centerX = plan.boundsM.width / 2;
+    const centerZ = plan.boundsM.depth / 2;
+    const size = Math.max(plan.boundsM.width, plan.boundsM.depth, 4);
+    setMode("orbit");
+    runtime.pointer.unlock();
+    runtime.orbit.enabled = true;
+    runtime.orbit.target.set(centerX, 0.5, centerZ);
+    if (preset === "top") runtime.camera.position.set(centerX, size * 1.8, centerZ + 0.001);
+    else runtime.camera.position.set(centerX + size, size * 0.9, centerZ + size);
+    runtime.camera.lookAt(centerX, 0.5, centerZ);
+    runtime.orbit.update();
+  };
+
+  const toggleWalk = () => {
+    const runtime = runtimeRef.current;
+    if (!runtime) return;
+    if (mode === "walk") {
+      setMode("orbit");
+      runtime.pointer.unlock();
+      runtime.orbit.enabled = true;
+      setCameraPreset("reset");
+    } else {
+      setMode("walk");
+      runtime.orbit.enabled = false;
+      runtime.camera.position.set(plan.boundsM.width / 2, 1.65, plan.boundsM.depth / 2);
+      runtime.camera.rotation.set(0, 0, 0);
+    }
+  };
+
+  const press = (key: string, active: boolean) => {
+    if (active) movementRef.current.add(key);
+    else movementRef.current.delete(key);
+  };
+
+  return (
+    <div className="three-view" ref={hostRef}>
+      {error && <div className="three-error">{error}</div>}
+      <div className="three-toolbar">
+        <button onClick={() => setCameraPreset("top")}>Top</button>
+        <button onClick={() => setCameraPreset("iso")}>Isometric</button>
+        <button onClick={() => setCameraPreset("reset")}>Reset</button>
+        <button className={mode === "walk" ? "active" : ""} onClick={toggleWalk}>{mode === "walk" ? "Exit walk" : "Walkthrough"}</button>
+      </div>
+      {mode === "walk" && (
+        <>
+          <div className="walk-hint">Click the view for mouse look · WASD to move · Esc releases the mouse</div>
+          <div className="walk-touch" aria-label="Walkthrough touch controls">
+            {[
+              ["↶", "left"],
+              ["↑", "forward"],
+              ["↷", "right"],
+              ["↓", "back"],
+            ].map(([label, key]) => (
+              <button
+                key={key}
+                onPointerDown={(event) => { event.preventDefault(); press(key, true); }}
+                onPointerUp={() => press(key, false)}
+                onPointerCancel={() => press(key, false)}
+                onPointerLeave={() => press(key, false)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
