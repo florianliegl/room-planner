@@ -255,6 +255,7 @@ function chairFrictionFitGeometries(
   const pinRadius = Math.max(0.6, Math.min(1.6, width * 0.035));
   const pinLength = Math.max(1.8, Math.min(5, height * 0.1));
   const socketRadius = pinRadius + Math.max(0, options.connectorClearanceMm) / 2;
+  const receiverRadius = socketRadius + Math.max(0.45, pinRadius * 0.45);
   connector.xPositions.forEach((x) => {
     const pin = primitives.cylinderElliptic({
       height: pinLength + 0.08,
@@ -263,13 +264,22 @@ function chairFrictionFitGeometries(
       center: [x, connector.y, floorHeight + connector.seatZ - pinLength / 2 + 0.04],
       segments: 20,
     }) as Geom3;
+    const socketBottom = connector.seatZ - pinLength - 0.08;
+    const socketTop = connector.seatTopZ + 0.25;
+    const receiver = primitives.cylinder({
+      height: socketTop - socketBottom,
+      radius: receiverRadius,
+      center: [x, connector.y, floorHeight + (socketBottom + socketTop) / 2],
+      segments: 20,
+    }) as Geom3;
     const socket = primitives.cylinder({
-      height: pinLength + 0.16,
+      height: socketTop - socketBottom + 0.1,
       radius: socketRadius,
-      center: [x, connector.y, floorHeight + connector.seatZ - pinLength / 2],
+      center: [x, connector.y, floorHeight + (socketBottom + socketTop) / 2 + 0.05],
       segments: 20,
     }) as Geom3;
     back = booleans.union(back, pin) as Geom3;
+    body = booleans.union(body, receiver) as Geom3;
     body = booleans.subtract(body, socket) as Geom3;
   });
   const center = preservePosition ? transformPoint(plan, layout, { x: object.x, y: object.y }) : { x: 0, y: 0 };

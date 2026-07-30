@@ -119,9 +119,18 @@ export function chairConnectorLayout(
   style: FurniturePrintStyle,
 ) {
   const printFriendly = style === "print-friendly";
+  const seatZ = height * (printFriendly ? 0.46 : 0.48);
+  const seatThickness = height * (
+    printFriendly
+      ? 0.16
+      : style === "modern"
+        ? 0.07
+        : 0.11
+  );
   return {
     xPositions: [-width * (printFriendly ? 0.36 : 0.4), width * (printFriendly ? 0.36 : 0.4)],
     y: -depth * (printFriendly ? 0.34 : 0.4),
-    seatZ: height * (printFriendly ? 0.46 : 0.48),
+    seatZ,
+    seatTopZ: seatZ + seatThickness / 2,
   };
 }

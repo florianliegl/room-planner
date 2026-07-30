@@ -68,11 +68,18 @@ export default function FurnitureStylePreview({
         pin.position.set(x, connector.seatZ - pinLength / 2, connector.y);
         pin.castShadow = true;
         backGroup.add(pin);
+        const receiver = new THREE.Mesh(
+          new THREE.CylinderGeometry(pinRadius * 1.65, pinRadius * 1.65, pinLength, 20),
+          new THREE.MeshStandardMaterial({ color: object.color, roughness: 0.68 }),
+        );
+        receiver.position.set(x, connector.seatZ - pinLength / 2, connector.y);
+        receiver.castShadow = true;
+        bodyGroup.add(receiver);
         const socket = new THREE.Mesh(
-          new THREE.CylinderGeometry(pinRadius * 1.12, pinRadius * 1.12, 0.006, 16),
+          new THREE.CylinderGeometry(pinRadius * 1.14, pinRadius * 1.14, 0.01, 20),
           new THREE.MeshStandardMaterial({ color: "#0f172a", roughness: 0.8 }),
         );
-        socket.position.set(x, connector.seatZ + 0.004, connector.y);
+        socket.position.set(x, connector.seatTopZ + 0.006, connector.y);
         bodyGroup.add(socket);
       });
       backGroup.position.set(0, object.modelHeightM * 0.16, -object.heightM * 0.2);
