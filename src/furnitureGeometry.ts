@@ -38,13 +38,14 @@ export function buildFurnitureParts(
       add([w * 0.16, d * 0.8, h * 0.82], [w * 0.36, 0, h * 0.41]);
     } else if (type === "chair") {
       const seatZ = h * 0.46;
+      const seatTopZ = seatZ + h * 0.08;
       add([w, d, h * 0.16], [0, 0, seatZ], "accent");
       add([w * 0.16, d * 0.16, seatZ], [-w * 0.36, d * 0.34, seatZ / 2], "dark");
       add([w * 0.16, d * 0.16, seatZ], [w * 0.36, d * 0.34, seatZ / 2], "dark");
       add([w * 0.16, d * 0.16, seatZ], [-w * 0.36, -d * 0.34, seatZ / 2], "dark");
       add([w * 0.16, d * 0.16, seatZ], [w * 0.36, -d * 0.34, seatZ / 2], "dark");
-      add([w * 0.16, d * 0.16, h - seatZ], [-w * 0.36, -d * 0.34, (h + seatZ) / 2], "dark", "back");
-      add([w * 0.16, d * 0.16, h - seatZ], [w * 0.36, -d * 0.34, (h + seatZ) / 2], "dark", "back");
+      add([w * 0.16, d * 0.16, h - seatTopZ], [-w * 0.36, -d * 0.34, (h + seatTopZ) / 2], "dark", "back");
+      add([w * 0.16, d * 0.16, h - seatTopZ], [w * 0.36, -d * 0.34, (h + seatTopZ) / 2], "dark", "back");
       add([w * 0.78, d * 0.16, h * 0.3], [0, -d * 0.34, h * 0.8], "accent", "back");
     } else if (type === "bed") {
       add([w, d, h * 0.48], [0, 0, h * 0.24]);
@@ -77,6 +78,7 @@ export function buildFurnitureParts(
   } else if (type === "chair") {
     const seatZ = h * 0.48;
     const slab = style === "modern" ? h * 0.07 : h * 0.11;
+    const seatTopZ = seatZ + slab / 2;
     add([w, d, slab], [0, 0, seatZ], "accent");
     const legW = Math.max(w * (style === "modern" ? 0.055 : 0.09), 0.01);
     const legD = Math.max(d * (style === "modern" ? 0.055 : 0.09), 0.01);
@@ -84,8 +86,8 @@ export function buildFurnitureParts(
       add([legW, legD, seatZ], [sx * w * 0.4, sy * d * 0.4, seatZ / 2], "dark"),
     ));
     const postWidth = Math.max(w * (style === "modern" ? 0.055 : 0.09), 0.01);
-    add([postWidth, legD, h * 0.52], [-w * 0.4, -d * 0.4, h * 0.74], "dark", "back");
-    add([postWidth, legD, h * 0.52], [w * 0.4, -d * 0.4, h * 0.74], "dark", "back");
+    add([postWidth, legD, h - seatTopZ], [-w * 0.4, -d * 0.4, (h + seatTopZ) / 2], "dark", "back");
+    add([postWidth, legD, h - seatTopZ], [w * 0.4, -d * 0.4, (h + seatTopZ) / 2], "dark", "back");
     add([w * 0.86, d * (style === "modern" ? 0.065 : 0.1), h * 0.26], [0, -d * 0.4, h * 0.82], "accent", "back");
   } else if (type === "table" || type === "desk") {
     const topZ = h * 0.9;

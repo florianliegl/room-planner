@@ -253,7 +253,7 @@ function chairFrictionFitGeometries(
   let back = makeSolid("back");
   const connector = chairConnectorLayout(width, depth, height, style);
   const pinRadius = Math.max(0.6, Math.min(1.6, width * 0.035));
-  const pinLength = Math.max(1.8, Math.min(5, height * 0.1));
+  const pinLength = Math.max(1.4, Math.min(3, height * 0.06));
   const socketRadius = pinRadius + Math.max(0, options.connectorClearanceMm) / 2;
   const receiverRadius = socketRadius + Math.max(0.45, pinRadius * 0.45);
   connector.xPositions.forEach((x) => {
@@ -261,16 +261,14 @@ function chairFrictionFitGeometries(
       height: pinLength + 0.08,
       startRadius: [pinRadius * 0.86, pinRadius * 0.86],
       endRadius: [pinRadius, pinRadius],
-      center: [x, connector.y, floorHeight + connector.seatZ - pinLength / 2 + 0.04],
+      center: [x, connector.y, floorHeight + connector.seatTopZ - pinLength / 2 + 0.04],
       segments: 20,
     }) as Geom3;
-    const socketBottom = connector.seatZ - pinLength - 0.08;
+    const socketBottom = connector.seatTopZ - pinLength - 0.18;
     const socketTop = connector.seatTopZ + 0.25;
-    const receiver = primitives.cylinder({
-      height: socketTop - socketBottom,
-      radius: receiverRadius,
-      center: [x, connector.y, floorHeight + (socketBottom + socketTop) / 2],
-      segments: 20,
+    const receiver = primitives.cuboid({
+      size: [receiverRadius * 2, receiverRadius * 2, connector.seatTopZ - socketBottom],
+      center: [x, connector.y, floorHeight + (socketBottom + connector.seatTopZ) / 2],
     }) as Geom3;
     const socket = primitives.cylinder({
       height: socketTop - socketBottom + 0.1,
