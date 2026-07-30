@@ -65,6 +65,7 @@ export type PrintExportOptions = {
   floorThicknessMm: number;
   furnitureMode: "none" | "fused" | "loose";
   furnitureStyles: Record<string, FurniturePrintStyle>;
+  furnitureAssemblyModes: Record<string, FurnitureAssemblyMode>;
   bedWidthMm: number;
   bedDepthMm: number;
   bedMarginMm: number;
@@ -85,6 +86,7 @@ export const defaultPrintOptions: PrintExportOptions = {
   floorThicknessMm: 2,
   furnitureMode: "none",
   furnitureStyles: {},
+  furnitureAssemblyModes: {},
   bedWidthMm: 220,
   bedDepthMm: 220,
   bedMarginMm: 5,
@@ -95,6 +97,7 @@ export const defaultPrintOptions: PrintExportOptions = {
 };
 
 export type FurniturePrintStyle = "classic" | "modern" | "print-friendly";
+export type FurnitureAssemblyMode = "single" | "friction-fit";
 
 export type PrintLayout = {
   denominator: number;

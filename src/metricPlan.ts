@@ -93,6 +93,16 @@ export function calculatePrintLayout(plan: MetricPlan, options: PrintExportOptio
   const availableDepthMm = Math.max(10, options.bedDepthMm - options.bedMarginMm * 2);
   if (options.exportScope === "furniture") {
     const models = plan.furniture.filter((object) => object.type !== "door" && object.type !== "window");
+    const partCount = models.reduce(
+      (count, object) =>
+        count + (
+          object.type === "chair" &&
+          options.furnitureAssemblyModes?.[object.id] === "friction-fit"
+            ? 2
+            : 1
+        ),
+      0,
+    );
     const widthM = Math.max(0.001, ...models.map((object) => object.widthM));
     const depthM = Math.max(0.001, ...models.map((object) => object.heightM));
     let denominator = Math.max(1, options.scaleDenominator);
@@ -116,7 +126,7 @@ export function calculatePrintLayout(plan: MetricPlan, options: PrintExportOptio
       heightMm,
       columns: 1,
       rows: 1,
-      partCount: models.length,
+      partCount,
       availableWidthMm,
       availableDepthMm,
       warnings: models.length ? [] : ["Add at least one printable furniture object."],

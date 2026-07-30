@@ -4,6 +4,7 @@ import { furniturePrintStyles } from "./furnitureGeometry";
 import { calculatePrintLayout } from "./metricPlan";
 import {
   defaultPrintOptions,
+  type FurnitureAssemblyMode,
   type FurniturePrintStyle,
   type MetricPlan,
   type PrintExportOptions,
@@ -32,6 +33,10 @@ function loadOptions() {
       ...defaultPrintOptions,
       ...saved,
       furnitureStyles: { ...defaultPrintOptions.furnitureStyles, ...saved.furnitureStyles },
+      furnitureAssemblyModes: {
+        ...defaultPrintOptions.furnitureAssemblyModes,
+        ...saved.furnitureAssemblyModes,
+      },
     } as PrintExportOptions;
   } catch {
     return defaultPrintOptions;
@@ -76,6 +81,12 @@ export default function PrintExportDialog({ plan, calibrated, onClose }: Props) 
     setOptions((current) => ({
       ...current,
       furnitureStyles: { ...current.furnitureStyles, [id]: style },
+    }));
+
+  const setFurnitureAssemblyMode = (id: string, mode: FurnitureAssemblyMode) =>
+    setOptions((current) => ({
+      ...current,
+      furnitureAssemblyModes: { ...current.furnitureAssemblyModes, [id]: mode },
     }));
 
   const startExport = () => {
@@ -133,6 +144,9 @@ export default function PrintExportDialog({ plan, calibrated, onClose }: Props) 
   const selectedStyle = selectedFurniture
     ? options.furnitureStyles[selectedFurniture.id] ?? "classic"
     : "classic";
+  const selectedAssemblyMode = selectedFurniture
+    ? options.furnitureAssemblyModes[selectedFurniture.id] ?? "single"
+    : "single";
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !status && onClose()}>
@@ -170,7 +184,7 @@ export default function PrintExportDialog({ plan, calibrated, onClose }: Props) 
               </div>
             ) : selectedFurniture ? (
               <Suspense fallback={<div className="furniture-preview-loading">Loading 3D preview…</div>}>
-                <FurnitureStylePreview object={selectedFurniture} style={selectedStyle} />
+                <FurnitureStylePreview object={selectedFurniture} style={selectedStyle} assemblyMode={selectedAssemblyMode} />
               </Suspense>
             ) : (
               <div className="furniture-preview-loading">Add furniture to preview and export it.</div>
@@ -282,9 +296,35 @@ export default function PrintExportDialog({ plan, calibrated, onClose }: Props) 
                   ))}
                 </div>
                 <p className="setting-help">{furniturePrintStyles.find((style) => style.id === selectedStyle)?.description}</p>
+                {selectedFurniture.type === "chair" &&
+                  (options.exportScope === "furniture" || options.furnitureMode === "loose") && (
+                  <>
+                    <h3>Assembly</h3>
+                    <div className="segmented">
+                      <button
+                        className={selectedAssemblyMode === "single" ? "active" : ""}
+                        onClick={() => setFurnitureAssemblyMode(selectedFurniture.id, "single")}
+                      >
+                        One piece
+                      </button>
+                      <button
+                        className={selectedAssemblyMode === "friction-fit" ? "active" : ""}
+                        onClick={() => setFurnitureAssemblyMode(selectedFurniture.id, "friction-fit")}
+                      >
+                        Friction-fit parts
+                      </button>
+                    </div>
+                    {selectedAssemblyMode === "friction-fit" && (
+                      <p className="setting-help">
+                        Exports the chair body and back as separate named parts. Two pins on the back press into
+                        matching sockets behind the seat using the connector clearance below.
+                      </p>
+                    )}
+                  </>
+                )}
                 {options.exportScope === "room" && (
                   <Suspense fallback={<div className="furniture-preview-loading compact">Loading 3D preview…</div>}>
-                    <FurnitureStylePreview object={selectedFurniture} style={selectedStyle} />
+                    <FurnitureStylePreview object={selectedFurniture} style={selectedStyle} assemblyMode={selectedAssemblyMode} />
                   </Suspense>
                 )}
               </div>
@@ -319,13 +359,18 @@ export default function PrintExportDialog({ plan, calibrated, onClose }: Props) 
               <label className="check-row"><input type="checkbox" checked={options.autoRotate} onChange={(event) => patch("autoRotate", event.target.checked)} /> Auto-rotate for best fit</label>
             </div>
 
-            {options.exportScope === "room" && layout.partCount > 1 && (
+            {((options.exportScope === "room" && layout.partCount > 1) ||
+              (selectedFurniture?.type === "chair" &&
+                selectedAssemblyMode === "friction-fit" &&
+                (options.exportScope === "furniture" || options.furnitureMode === "loose"))) && (
               <div className="setting-group">
-                <h3>Slide-in wall connectors</h3>
-                <p className="setting-help">
-                  Split walls receive a full-height trapezoidal tongue and matching groove. Lower the tongue piece
-                  into the groove from above. Floors meet at a plain seam and do not receive connectors.
-                </p>
+                <h3>Connector clearance</h3>
+                {options.exportScope === "room" && layout.partCount > 1 && (
+                  <p className="setting-help">
+                    Split walls receive a full-height trapezoidal tongue and matching groove. Lower the tongue piece
+                    into the groove from above. Floors meet at a plain seam and do not receive connectors.
+                  </p>
+                )}
                 <NumberField label="Clearance mm" value={options.connectorClearanceMm} min={0} step={0.05} onChange={(value) => patch("connectorClearanceMm", value)} />
               </div>
             )}

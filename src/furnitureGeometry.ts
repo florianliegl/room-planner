@@ -4,6 +4,7 @@ export type FurniturePartSpec = {
   size: [number, number, number];
   center: [number, number, number];
   tone: "primary" | "light" | "dark" | "accent";
+  assemblyPart?: "body" | "back";
 };
 
 export const furniturePrintStyles: Array<{ id: FurniturePrintStyle; label: string; description: string }> = [
@@ -27,7 +28,8 @@ export function buildFurnitureParts(
     size: [number, number, number],
     center: [number, number, number],
     tone: FurniturePartSpec["tone"] = "primary",
-  ) => parts.push({ size: size.map((value) => Math.max(0.01, value)) as [number, number, number], center, tone });
+    assemblyPart: FurniturePartSpec["assemblyPart"] = "body",
+  ) => parts.push({ size: size.map((value) => Math.max(0.01, value)) as [number, number, number], center, tone, assemblyPart });
 
   if (style === "print-friendly") {
     if (type === "table" || type === "desk") {
@@ -39,9 +41,11 @@ export function buildFurnitureParts(
       add([w, d, h * 0.16], [0, 0, seatZ], "accent");
       add([w * 0.16, d * 0.16, seatZ], [-w * 0.36, d * 0.34, seatZ / 2], "dark");
       add([w * 0.16, d * 0.16, seatZ], [w * 0.36, d * 0.34, seatZ / 2], "dark");
-      add([w * 0.16, d * 0.16, h], [-w * 0.36, -d * 0.34, h / 2], "dark");
-      add([w * 0.16, d * 0.16, h], [w * 0.36, -d * 0.34, h / 2], "dark");
-      add([w * 0.78, d * 0.16, h * 0.3], [0, -d * 0.34, h * 0.8], "accent");
+      add([w * 0.16, d * 0.16, seatZ], [-w * 0.36, -d * 0.34, seatZ / 2], "dark");
+      add([w * 0.16, d * 0.16, seatZ], [w * 0.36, -d * 0.34, seatZ / 2], "dark");
+      add([w * 0.16, d * 0.16, h - seatZ], [-w * 0.36, -d * 0.34, (h + seatZ) / 2], "dark", "back");
+      add([w * 0.16, d * 0.16, h - seatZ], [w * 0.36, -d * 0.34, (h + seatZ) / 2], "dark", "back");
+      add([w * 0.78, d * 0.16, h * 0.3], [0, -d * 0.34, h * 0.8], "accent", "back");
     } else if (type === "bed") {
       add([w, d, h * 0.48], [0, 0, h * 0.24]);
       add([w, d * 0.12, h], [0, -d * 0.44, h * 0.5]);
@@ -80,9 +84,9 @@ export function buildFurnitureParts(
       add([legW, legD, seatZ], [sx * w * 0.4, sy * d * 0.4, seatZ / 2], "dark"),
     ));
     const postWidth = Math.max(w * (style === "modern" ? 0.055 : 0.09), 0.01);
-    add([postWidth, legD, h * 0.52], [-w * 0.4, -d * 0.4, h * 0.74], "dark");
-    add([postWidth, legD, h * 0.52], [w * 0.4, -d * 0.4, h * 0.74], "dark");
-    add([w * 0.86, d * (style === "modern" ? 0.065 : 0.1), h * 0.26], [0, -d * 0.4, h * 0.82], "accent");
+    add([postWidth, legD, h * 0.52], [-w * 0.4, -d * 0.4, h * 0.74], "dark", "back");
+    add([postWidth, legD, h * 0.52], [w * 0.4, -d * 0.4, h * 0.74], "dark", "back");
+    add([w * 0.86, d * (style === "modern" ? 0.065 : 0.1), h * 0.26], [0, -d * 0.4, h * 0.82], "accent", "back");
   } else if (type === "table" || type === "desk") {
     const topZ = h * 0.9;
     const slab = style === "modern" ? h * 0.07 : h * 0.11;
@@ -106,4 +110,18 @@ export function buildFurnitureParts(
     add([w, d, h], [0, 0, h / 2]);
   }
   return parts;
+}
+
+export function chairConnectorLayout(
+  width: number,
+  depth: number,
+  height: number,
+  style: FurniturePrintStyle,
+) {
+  const printFriendly = style === "print-friendly";
+  return {
+    xPositions: [-width * (printFriendly ? 0.36 : 0.4), width * (printFriendly ? 0.36 : 0.4)],
+    y: -depth * (printFriendly ? 0.34 : 0.4),
+    seatZ: height * (printFriendly ? 0.46 : 0.48),
+  };
 }

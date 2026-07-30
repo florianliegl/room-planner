@@ -3,7 +3,7 @@ import { booleans, colors, extrusions, measurements, primitives, transforms } fr
 import { serialize as serialize3mf } from "@jscad/3mf-serializer";
 import { serialize as serializeStl } from "@jscad/stl-serializer";
 import { zipSync } from "fflate";
-import { buildFurnitureParts } from "./furnitureGeometry";
+import { buildFurnitureParts, chairConnectorLayout } from "./furnitureGeometry";
 import type { MetricPlan, Point, PrintExportOptions, PrintLayout, WallSegment } from "./plannerTypes";
 import {
   connectedWallExtensions,
@@ -223,6 +223,68 @@ function furnitureGeometry(
   return geometry;
 }
 
+function chairFrictionFitGeometries(
+  plan: MetricPlan,
+  layout: PrintLayout,
+  options: PrintExportOptions,
+  object: MetricPlan["furniture"][number],
+  floorHeight: number,
+  preservePosition: boolean,
+) {
+  if (object.type !== "chair") return null;
+  const scale = 1000 / layout.denominator;
+  const width = Math.max(0.5, object.widthM * scale);
+  const depth = Math.max(0.5, object.heightM * scale);
+  const height = options.exportScope === "room" && options.heightMode === "low"
+    ? Math.max(0.6, object.modelHeightM / plan.settings.wallHeightM * options.lowProfileHeightMm)
+    : Math.max(0.6, object.modelHeightM * scale);
+  const style = options.furnitureStyles?.[object.id] ?? "classic";
+  const specs = buildFurnitureParts(object.type, width, depth, height, style);
+  const makeSolid = (assemblyPart: "body" | "back") => {
+    const pieces = specs
+      .filter((part) => part.assemblyPart === assemblyPart)
+      .map((part) => primitives.cuboid({
+        size: part.size,
+        center: [part.center[0], part.center[1], floorHeight + part.center[2]],
+      }) as Geom3);
+    return pieces.length === 1 ? pieces[0] : booleans.union(...pieces) as Geom3;
+  };
+  let body = makeSolid("body");
+  let back = makeSolid("back");
+  const connector = chairConnectorLayout(width, depth, height, style);
+  const pinRadius = Math.max(0.6, Math.min(1.6, width * 0.035));
+  const pinLength = Math.max(1.8, Math.min(5, height * 0.1));
+  const socketRadius = pinRadius + Math.max(0, options.connectorClearanceMm) / 2;
+  connector.xPositions.forEach((x) => {
+    const pin = primitives.cylinderElliptic({
+      height: pinLength + 0.08,
+      startRadius: [pinRadius * 0.86, pinRadius * 0.86],
+      endRadius: [pinRadius, pinRadius],
+      center: [x, connector.y, floorHeight + connector.seatZ - pinLength / 2 + 0.04],
+      segments: 20,
+    }) as Geom3;
+    const socket = primitives.cylinder({
+      height: pinLength + 0.16,
+      radius: socketRadius,
+      center: [x, connector.y, floorHeight + connector.seatZ - pinLength / 2],
+      segments: 20,
+    }) as Geom3;
+    back = booleans.union(back, pin) as Geom3;
+    body = booleans.subtract(body, socket) as Geom3;
+  });
+  const center = preservePosition ? transformPoint(plan, layout, { x: object.x, y: object.y }) : { x: 0, y: 0 };
+  const angle = ((layout.rotated ? object.rotation + 90 : object.rotation) * Math.PI) / 180;
+  const place = (geometry: Geom3) =>
+    transforms.translate(
+      [center.x, center.y, 0],
+      transforms.rotateZ(-angle, geometry),
+    ) as Geom3;
+  return [
+    { suffix: "Body", geometry: place(body) },
+    { suffix: "Back", geometry: place(back) },
+  ];
+}
+
 function floorGeometry(
   plan: MetricPlan,
   layout: PrintLayout,
@@ -436,13 +498,23 @@ ctx.onmessage = (event: MessageEvent<RequestMessage>) => {
     optionsForScore = options;
     if (options.exportScope === "furniture") {
       report(12, "Building furniture models");
-      const parts = plan.furniture
-        .map((object, index) => {
+      const parts = plan.furniture.flatMap((object, index) => {
+          if (
+            object.type === "chair" &&
+            options.furnitureAssemblyModes?.[object.id] === "friction-fit"
+          ) {
+            const split = chairFrictionFitGeometries(plan, layout, options, object, 0, false);
+            return (split ?? []).map(({ suffix, geometry }) => {
+              const named = colors.colorize([0.4, 0.55, 0.75, 1], geometry) as NamedGeometry;
+              named.name = `Furniture ${String(index + 1).padStart(2, "0")} - ${object.label} - ${suffix}`;
+              return named;
+            });
+          }
           const geometry = furnitureGeometry(plan, layout, options, object, 0, false);
-          if (!geometry) return null;
+          if (!geometry) return [];
           const named = colors.colorize([0.4, 0.55, 0.75, 1], geometry) as NamedGeometry;
           named.name = `Furniture ${String(index + 1).padStart(2, "0")} - ${object.label}`;
-          return named;
+          return [named];
         })
         .filter((geometry): geometry is NamedGeometry => Boolean(geometry));
       if (!parts.length) throw new Error("Add at least one printable furniture object.");
@@ -482,9 +554,18 @@ ctx.onmessage = (event: MessageEvent<RequestMessage>) => {
     let base = structural.length === 1 ? structural[0] : booleans.union(...structural) as Geom3;
 
     report(24, "Building furniture");
-    const furniture = plan.furniture
-      .map((object) => ({ object, geometry: furnitureGeometry(plan, layout, options, object, floorHeight) }))
-      .filter((entry): entry is { object: MetricPlan["furniture"][number]; geometry: Geom3 } => Boolean(entry.geometry));
+    const furniture = plan.furniture.flatMap((object) => {
+      if (
+        options.furnitureMode === "loose" &&
+        object.type === "chair" &&
+        options.furnitureAssemblyModes?.[object.id] === "friction-fit"
+      ) {
+        return (chairFrictionFitGeometries(plan, layout, options, object, floorHeight, true) ?? [])
+          .map(({ suffix, geometry }) => ({ object, geometry, suffix }));
+      }
+      const geometry = furnitureGeometry(plan, layout, options, object, floorHeight);
+      return geometry ? [{ object, geometry, suffix: "" }] : [];
+    });
     if (options.furnitureMode === "fused" && furniture.length) base = booleans.union(base, ...furniture.map((entry) => entry.geometry)) as Geom3;
 
     const xCuts = chooseCuts(plan, layout, "x", layout.columns, layout.widthMm, layout.availableWidthMm);
@@ -536,9 +617,9 @@ ctx.onmessage = (event: MessageEvent<RequestMessage>) => {
     }
 
     if (options.furnitureMode === "loose") {
-      furniture.forEach(({ object, geometry }) => {
+      furniture.forEach(({ object, geometry, suffix }) => {
         const named = colors.colorize([0.4, 0.55, 0.75, 1], geometry) as NamedGeometry;
-        named.name = `Furniture - ${object.label}`;
+        named.name = `Furniture - ${object.label}${suffix ? ` - ${suffix}` : ""}`;
         parts.push(named);
       });
     }

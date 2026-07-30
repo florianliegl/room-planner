@@ -1,10 +1,18 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { buildFurnitureParts } from "./furnitureGeometry";
-import type { Furniture, FurniturePrintStyle } from "./plannerTypes";
+import { buildFurnitureParts, chairConnectorLayout } from "./furnitureGeometry";
+import type { Furniture, FurnitureAssemblyMode, FurniturePrintStyle } from "./plannerTypes";
 
-export default function FurnitureStylePreview({ object, style }: { object: Furniture; style: FurniturePrintStyle }) {
+export default function FurnitureStylePreview({
+  object,
+  style,
+  assemblyMode,
+}: {
+  object: Furniture;
+  style: FurniturePrintStyle;
+  assemblyMode: FurnitureAssemblyMode;
+}) {
   const hostRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -18,6 +26,9 @@ export default function FurnitureStylePreview({ object, style }: { object: Furni
     scene.background = new THREE.Color("#eef2f7");
     const camera = new THREE.PerspectiveCamera(38, 1, 0.01, 100);
     const model = new THREE.Group();
+    const bodyGroup = new THREE.Group();
+    const backGroup = new THREE.Group();
+    model.add(bodyGroup, backGroup);
     scene.add(model);
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enablePan = false;
@@ -38,8 +49,34 @@ export default function FurnitureStylePreview({ object, style }: { object: Furni
       mesh.position.set(part.center[0], part.center[2], part.center[1]);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
-      model.add(mesh);
+      (part.assemblyPart === "back" ? backGroup : bodyGroup).add(mesh);
     });
+    if (object.type === "chair" && assemblyMode === "friction-fit") {
+      const connector = chairConnectorLayout(
+        object.widthM,
+        object.heightM,
+        object.modelHeightM,
+        style,
+      );
+      const pinRadius = Math.max(0.012, object.widthM * 0.035);
+      const pinLength = Math.max(0.04, object.modelHeightM * 0.1);
+      connector.xPositions.forEach((x) => {
+        const pin = new THREE.Mesh(
+          new THREE.CylinderGeometry(pinRadius, pinRadius * 0.88, pinLength, 16),
+          new THREE.MeshStandardMaterial({ color: "#2563eb", roughness: 0.55 }),
+        );
+        pin.position.set(x, connector.seatZ - pinLength / 2, connector.y);
+        pin.castShadow = true;
+        backGroup.add(pin);
+        const socket = new THREE.Mesh(
+          new THREE.CylinderGeometry(pinRadius * 1.12, pinRadius * 1.12, 0.006, 16),
+          new THREE.MeshStandardMaterial({ color: "#0f172a", roughness: 0.8 }),
+        );
+        socket.position.set(x, connector.seatZ + 0.004, connector.y);
+        bodyGroup.add(socket);
+      });
+      backGroup.position.set(0, object.modelHeightM * 0.16, -object.heightM * 0.2);
+    }
     const bounds = new THREE.Box3().setFromObject(model);
     const center = bounds.getCenter(new THREE.Vector3());
     const dimensions = bounds.getSize(new THREE.Vector3());
@@ -85,7 +122,7 @@ export default function FurnitureStylePreview({ object, style }: { object: Furni
       renderer.dispose();
       renderer.domElement.remove();
     };
-  }, [object, style]);
+  }, [assemblyMode, object, style]);
 
   return <div className="furniture-style-preview" ref={hostRef} aria-label={`${object.label} ${style} 3D preview`} />;
 }
