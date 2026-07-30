@@ -91,6 +91,37 @@ export function createMetricPlan(
 export function calculatePrintLayout(plan: MetricPlan, options: PrintExportOptions): PrintLayout {
   const availableWidthMm = Math.max(10, options.bedWidthMm - options.bedMarginMm * 2);
   const availableDepthMm = Math.max(10, options.bedDepthMm - options.bedMarginMm * 2);
+  if (options.exportScope === "furniture") {
+    const models = plan.furniture.filter((object) => object.type !== "door" && object.type !== "window");
+    const widthM = Math.max(0.001, ...models.map((object) => object.widthM));
+    const depthM = Math.max(0.001, ...models.map((object) => object.heightM));
+    let denominator = Math.max(1, options.scaleDenominator);
+    let rotated = false;
+    if (options.scaleMode === "fit") {
+      const normal = Math.max((widthM * 1000) / availableWidthMm, (depthM * 1000) / availableDepthMm);
+      const turned = Math.max((depthM * 1000) / availableWidthMm, (widthM * 1000) / availableDepthMm);
+      rotated = options.autoRotate && turned < normal;
+      denominator = rotated ? turned : normal;
+    } else if (options.autoRotate) {
+      rotated = depthM > widthM && availableWidthMm > availableDepthMm;
+    }
+    const widthMm = ((rotated ? depthM : widthM) * 1000) / denominator;
+    const depthMm = ((rotated ? widthM : depthM) * 1000) / denominator;
+    const heightMm = Math.max(0, ...models.map((object) => object.modelHeightM * 1000 / denominator));
+    return {
+      denominator,
+      rotated,
+      widthMm,
+      depthMm,
+      heightMm,
+      columns: 1,
+      rows: 1,
+      partCount: models.length,
+      availableWidthMm,
+      availableDepthMm,
+      warnings: models.length ? [] : ["Add at least one printable furniture object."],
+    };
+  }
   const widthM = Math.max(0.001, plan.boundsM.width);
   const depthM = Math.max(0.001, plan.boundsM.depth);
 

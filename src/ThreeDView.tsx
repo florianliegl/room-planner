@@ -1,11 +1,19 @@
 import { useEffect, useRef, useState } from "react";
+import {
+  booleans as jscadBooleans,
+  extrusions as jscadExtrusions,
+  primitives as jscadPrimitives,
+  transforms as jscadTransforms,
+} from "@jscad/modeling";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { PointerLockControls } from "three/examples/jsm/controls/PointerLockControls.js";
 import type { Furniture, MetricPlan, Point, WallSegment } from "./plannerTypes";
+import { connectedWallExtensions, counterClockwise, createContinuousWallRing } from "./wallGeometryCore";
 
 type Props = {
   plan: MetricPlan;
+  showRealWallThickness: boolean;
   selectedObjectId: string | null;
   onSelectObject: (id: string) => void;
 };
@@ -37,57 +45,153 @@ function createBox(
   return mesh;
 }
 
-function addWallBox(group: THREE.Group, wall: WallSegment, start: number, end: number, bottom: number, top: number, thickness: number, color: string) {
-  if (end - start < 0.002 || top - bottom < 0.002) return;
+type JscadGeom3 = ReturnType<typeof jscadPrimitives.cuboid>;
+
+function buildWallSolid(plan: MetricPlan, wall: WallSegment, thickness: number) {
   const length = wallLength(wall);
-  if (!length) return;
-  const ux = (wall.b.x - wall.a.x) / length;
-  const uz = (wall.b.y - wall.a.y) / length;
-  const center = (start + end) / 2;
-  const mesh = createBox(end - start, top - bottom, thickness, color, 0, bottom + (top - bottom) / 2);
-  mesh.position.x = wall.a.x + ux * center;
-  mesh.position.z = wall.a.y + uz * center;
-  mesh.rotation.y = -Math.atan2(uz, ux);
-  group.add(mesh);
+  if (length < 0.001) return null;
+  const angle = Math.atan2(wall.b.y - wall.a.y, wall.b.x - wall.a.x);
+  const direction = {
+    x: (wall.b.x - wall.a.x) / length,
+    y: (wall.b.y - wall.a.y) / length,
+  };
+  const extensions = connectedWallExtensions(wall, plan.walls, thickness);
+  const startExtension = extensions.start;
+  const endExtension = extensions.end;
+  const centerShift = (endExtension - startExtension) / 2;
+  let solid = jscadTransforms.translate(
+    [
+      (wall.a.x + wall.b.x) / 2 + direction.x * centerShift,
+      (wall.a.y + wall.b.y) / 2 + direction.y * centerShift,
+      plan.settings.wallHeightM / 2,
+    ],
+    jscadTransforms.rotateZ(
+      angle,
+      jscadPrimitives.cuboid({
+        size: [length + startExtension + endExtension, thickness, plan.settings.wallHeightM],
+      }),
+    ),
+  ) as JscadGeom3;
+  const openingCutters = plan.openings
+    .filter((opening) => opening.wallId === wall.id)
+    .map((opening) => {
+      const bottom = Math.max(0, opening.bottomM);
+      const height = Math.min(
+        plan.settings.wallHeightM - bottom,
+        opening.heightM,
+      );
+      if (height <= 0.001) return null;
+      return jscadTransforms.translate(
+        [opening.centerM.x, opening.centerM.y, bottom + height / 2],
+        jscadTransforms.rotateZ(
+          angle,
+          jscadPrimitives.cuboid({
+            size: [opening.widthM, thickness + 0.02, height + 0.01],
+          }),
+        ),
+      ) as JscadGeom3;
+    })
+    .filter((cutter): cutter is JscadGeom3 => Boolean(cutter));
+  if (openingCutters.length) {
+    solid = jscadBooleans.subtract(solid, ...openingCutters) as JscadGeom3;
+  }
+  return solid;
 }
 
-function buildWalls(plan: MetricPlan) {
-  const group = new THREE.Group();
-  plan.walls.forEach((wall) => {
-    const length = wallLength(wall);
-    const thickness = wall.kind === "outer" ? plan.settings.outerWallThicknessM : plan.settings.innerWallThicknessM;
-    const color = wall.kind === "outer" ? "#e2e8f0" : "#f1f5f9";
-    const wallOpenings = plan.openings
-      .filter((opening) => opening.wallId === wall.id)
-      .map((opening) => {
-        const ux = (wall.b.x - wall.a.x) / Math.max(length, 0.001);
-        const uz = (wall.b.y - wall.a.y) / Math.max(length, 0.001);
-        const center = (opening.centerM.x - wall.a.x) * ux + (opening.centerM.y - wall.a.y) * uz;
-        return {
-          start: Math.max(0, center - opening.widthM / 2),
-          end: Math.min(length, center + opening.widthM / 2),
-          bottom: Math.max(0, opening.bottomM),
-          top: Math.min(plan.settings.wallHeightM, opening.bottomM + opening.heightM),
-        };
-      })
-      .filter((opening) => opening.end > opening.start && opening.top > opening.bottom);
+function buildOuterWallRing(plan: MetricPlan, thickness: number) {
+  if (plan.outlineM.length < 3) return null;
+  let solid = jscadExtrusions.extrudeLinear(
+    { height: plan.settings.wallHeightM },
+    createContinuousWallRing(
+      plan.outlineM.map((point) => [point.x, point.y]),
+      thickness,
+    ),
+  ) as JscadGeom3;
+  const cutters = plan.openings
+    .map((opening) => {
+      const wall = plan.walls.find((candidate) => candidate.id === opening.wallId);
+      if (!wall || wall.kind !== "outer") return null;
+      const angle = Math.atan2(wall.b.y - wall.a.y, wall.b.x - wall.a.x);
+      const bottom = Math.max(0, opening.bottomM);
+      const height = Math.min(plan.settings.wallHeightM - bottom, opening.heightM);
+      if (height <= 0.001) return null;
+      return jscadTransforms.translate(
+        [opening.centerM.x, opening.centerM.y, bottom + height / 2],
+        jscadTransforms.rotateZ(
+          angle,
+          jscadPrimitives.cuboid({
+            size: [opening.widthM, thickness + 0.02, height + 0.01],
+          }),
+        ),
+      ) as JscadGeom3;
+    })
+    .filter((cutter): cutter is JscadGeom3 => Boolean(cutter));
+  if (cutters.length) solid = jscadBooleans.subtract(solid, ...cutters) as JscadGeom3;
+  return solid;
+}
 
-    const cuts = [...new Set([0, length, ...wallOpenings.flatMap((opening) => [opening.start, opening.end])])].sort((a, b) => a - b);
-    for (let index = 0; index < cuts.length - 1; index += 1) {
-      const start = cuts[index];
-      const end = cuts[index + 1];
-      const center = (start + end) / 2;
-      const covering = wallOpenings.filter((opening) => center > opening.start - 0.0001 && center < opening.end + 0.0001);
-      if (!covering.length) {
-        addWallBox(group, wall, start, end, 0, plan.settings.wallHeightM, thickness, color);
-      } else {
-        const bottom = Math.min(...covering.map((opening) => opening.bottom));
-        const top = Math.max(...covering.map((opening) => opening.top));
-        addWallBox(group, wall, start, end, 0, bottom, thickness, color);
-        addWallBox(group, wall, start, end, top, plan.settings.wallHeightM, thickness, color);
-      }
+function solidToThreeMesh(solid: JscadGeom3, color: string) {
+  const vertices: number[] = [];
+  solid.polygons.forEach((polygon) => {
+    if (polygon.vertices.length < 3) return;
+    const first = polygon.vertices[0];
+    for (let index = 1; index < polygon.vertices.length - 1; index += 1) {
+      const triangle = [first, polygon.vertices[index + 1], polygon.vertices[index]];
+      triangle.forEach((vertex) => vertices.push(vertex[0], vertex[2], vertex[1]));
     }
   });
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(vertices, 3));
+  geometry.computeVertexNormals();
+  const mesh = new THREE.Mesh(
+    geometry,
+    new THREE.MeshStandardMaterial({ color, roughness: 0.72, flatShading: true }),
+  );
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  return mesh;
+}
+
+function buildWalls(plan: MetricPlan, showRealWallThickness: boolean) {
+  const group = new THREE.Group();
+  const thicknessFor = (kind: WallSegment["kind"]) =>
+    showRealWallThickness
+      ? kind === "outer"
+        ? plan.settings.outerWallThicknessM
+        : plan.settings.innerWallThicknessM
+      : kind === "outer"
+        ? 0.08
+        : 0.05;
+  const solidsFor = (kind: WallSegment["kind"]) =>
+    plan.walls
+      .filter((wall) => wall.kind === kind)
+      .map((wall) => buildWallSolid(plan, wall, thicknessFor(kind)))
+      .filter((solid): solid is JscadGeom3 => Boolean(solid));
+  const outerRing = buildOuterWallRing(plan, thicknessFor("outer"));
+  const outerSolids = outerRing ? [] : solidsFor("outer");
+  const innerSolids = solidsFor("inner");
+  if (!outerRing && !outerSolids.length && !innerSolids.length) return group;
+
+  const outerJoined =
+    outerRing ??
+    (outerSolids.length > 1 ? jscadBooleans.union(...outerSolids) as JscadGeom3 : outerSolids[0]);
+  let innerJoined =
+    innerSolids.length > 1 ? jscadBooleans.union(...innerSolids) as JscadGeom3 : innerSolids[0];
+  if (innerJoined && plan.outlineM.length >= 3) {
+    const interiorPoints = counterClockwise(plan.outlineM.map((point) => [point.x, point.y]));
+    const interior = jscadExtrusions.extrudeLinear(
+      { height: plan.settings.wallHeightM },
+      jscadPrimitives.polygon({
+        points: interiorPoints,
+      }),
+    ) as JscadGeom3;
+    innerJoined = jscadBooleans.intersect(innerJoined, interior) as JscadGeom3;
+  }
+  const joined =
+    outerJoined && innerJoined
+      ? jscadBooleans.union(outerJoined, innerJoined) as JscadGeom3
+      : outerJoined ?? innerJoined;
+  if (joined) group.add(solidToThreeMesh(joined, "#e2e8f0"));
   return group;
 }
 
@@ -194,7 +298,7 @@ function canWalkTo(plan: MetricPlan, point: Point) {
   });
 }
 
-export default function ThreeDView({ plan, selectedObjectId, onSelectObject }: Props) {
+export default function ThreeDView({ plan, showRealWallThickness, selectedObjectId, onSelectObject }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const planRef = useRef(plan);
   const selectRef = useRef(onSelectObject);
@@ -363,12 +467,12 @@ export default function ThreeDView({ plan, selectedObjectId, onSelectObject }: P
       floor.receiveShadow = true;
       runtime.content.add(floor);
     }
-    runtime.content.add(buildWalls(plan));
+    runtime.content.add(buildWalls(plan, showRealWallThickness));
     runtime.content.add(buildOpenings(plan));
     plan.furniture
       .filter((object) => object.type !== "door" && object.type !== "window")
       .forEach((object) => runtime.content.add(buildFurnitureModel(object, object.id === selectedObjectId)));
-  }, [plan, selectedObjectId]);
+  }, [plan, selectedObjectId, showRealWallThickness]);
 
   const setCameraPreset = (preset: "top" | "iso" | "reset") => {
     const runtime = runtimeRef.current;
@@ -411,6 +515,9 @@ export default function ThreeDView({ plan, selectedObjectId, onSelectObject }: P
     <div className="three-view" ref={hostRef}>
       {error && <div className="three-error">{error}</div>}
       <div className="three-toolbar">
+        <span className="three-thickness-status">
+          {showRealWallThickness ? "Real wall thickness" : "Schematic walls"}
+        </span>
         <button onClick={() => setCameraPreset("top")}>Top</button>
         <button onClick={() => setCameraPreset("iso")}>Isometric</button>
         <button onClick={() => setCameraPreset("reset")}>Reset</button>

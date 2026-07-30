@@ -1,9 +1,16 @@
 /// <reference lib="webworker" />
-import { booleans, colors, extrusions, hulls, measurements, primitives, transforms } from "@jscad/modeling";
+import { booleans, colors, extrusions, measurements, primitives, transforms } from "@jscad/modeling";
 import { serialize as serialize3mf } from "@jscad/3mf-serializer";
 import { serialize as serializeStl } from "@jscad/stl-serializer";
 import { zipSync } from "fflate";
+import { buildFurnitureParts } from "./furnitureGeometry";
 import type { MetricPlan, Point, PrintExportOptions, PrintLayout, WallSegment } from "./plannerTypes";
+import {
+  connectedWallExtensions,
+  counterClockwise,
+  createContinuousWallRing,
+  createExpandedFootprint,
+} from "./wallGeometryCore";
 
 type Geom3 = ReturnType<typeof primitives.cuboid>;
 type RequestMessage = { plan: MetricPlan; options: PrintExportOptions; layout: PrintLayout };
@@ -33,9 +40,36 @@ function asBytes(parts: Array<ArrayBuffer | Uint8Array | string>) {
 function transformPoint(plan: MetricPlan, layout: PrintLayout, point: Point): Point {
   const scale = 1000 / layout.denominator;
   const x = (point.x - plan.boundsM.minX) * scale;
-  const y = (point.y - plan.boundsM.minY) * scale;
+  // Canvas coordinates grow downward. Printing/3D coordinates grow upward,
+  // so invert Y to preserve the plan's visible handedness in slicers.
+  const y = (plan.boundsM.maxY - point.y) * scale;
   if (!layout.rotated) return { x, y };
   return { x: y, y: plan.boundsM.width * scale - x };
+}
+
+function transformedOutlinePoints(plan: MetricPlan, layout: PrintLayout) {
+  const points = plan.outlineM.map((point) => {
+    const transformed = transformPoint(plan, layout, point);
+    return [transformed.x, transformed.y] as [number, number];
+  });
+  return counterClockwise(points);
+}
+
+function physicalWallThickness(
+  plan: MetricPlan,
+  layout: PrintLayout,
+  options: PrintExportOptions,
+  kind: WallSegment["kind"],
+) {
+  const realThickness =
+    (kind === "outer" ? plan.settings.outerWallThicknessM : plan.settings.innerWallThicknessM) *
+    1000 /
+    layout.denominator;
+  return Math.max(0.4, options.thicknessMode === "slim" ? options.slimWallThicknessMm : realThickness);
+}
+
+function wallFloorOverlap(floorHeight: number) {
+  return floorHeight > 0 ? Math.min(0.08, floorHeight * 0.1) : 0;
 }
 
 function wallGeometry(
@@ -50,16 +84,27 @@ function wallGeometry(
   const length = Math.hypot(b.x - a.x, b.y - a.y);
   if (length < 0.01) return null;
   const angle = Math.atan2(b.y - a.y, b.x - a.x);
-  const realThickness = (wall.kind === "outer" ? plan.settings.outerWallThicknessM : plan.settings.innerWallThicknessM) * 1000 / layout.denominator;
-  const thickness = options.thicknessMode === "slim" ? options.slimWallThicknessMm : realThickness;
+  const thickness = physicalWallThickness(plan, layout, options, wall.kind);
   const wallHeight = layout.heightMm;
+  const floorOverlap = wallFloorOverlap(floorHeight);
+  const wallBase = floorHeight - floorOverlap;
+  const solidHeight = wallHeight + floorOverlap;
+  const direction = { x: (b.x - a.x) / length, y: (b.y - a.y) / length };
+  const extensions = connectedWallExtensions(wall, plan.walls, thickness);
+  const startExtension = extensions.start;
+  const endExtension = extensions.end;
+  const centerShift = (endExtension - startExtension) / 2;
   let solid: Geom3 = transforms.translate(
-    [(a.x + b.x) / 2, (a.y + b.y) / 2, 0],
+    [
+      (a.x + b.x) / 2 + direction.x * centerShift,
+      (a.y + b.y) / 2 + direction.y * centerShift,
+      0,
+    ],
     transforms.rotateZ(
       angle,
       primitives.cuboid({
-        size: [length + thickness * 0.35, Math.max(0.4, thickness), wallHeight],
-        center: [0, 0, floorHeight + wallHeight / 2],
+        size: [length + startExtension + endExtension, thickness, solidHeight],
+        center: [0, 0, wallBase + solidHeight / 2],
       }),
     ),
   ) as Geom3;
@@ -90,55 +135,105 @@ function wallGeometry(
   return solid;
 }
 
-function furnitureGeometry(plan: MetricPlan, layout: PrintLayout, options: PrintExportOptions, object: MetricPlan["furniture"][number], floorHeight: number) {
+function outerWallRing(
+  plan: MetricPlan,
+  layout: PrintLayout,
+  options: PrintExportOptions,
+  floorHeight: number,
+) {
+  if (plan.outlineM.length < 3) return null;
+  const thickness = physicalWallThickness(plan, layout, options, "outer");
+  const floorOverlap = wallFloorOverlap(floorHeight);
+  const points = transformedOutlinePoints(plan, layout);
+  const ring = createContinuousWallRing(points, thickness);
+  let solid = transforms.translate(
+    [0, 0, floorHeight - floorOverlap],
+    extrusions.extrudeLinear({ height: layout.heightMm + floorOverlap }, ring),
+  ) as Geom3;
+  const openingScaleZ = layout.heightMm / Math.max(0.01, plan.settings.wallHeightM);
+  const cutters = plan.openings
+    .map((opening) => {
+      const wall = plan.walls.find((candidate) => candidate.id === opening.wallId);
+      if (!wall || wall.kind !== "outer") return null;
+      const a = transformPoint(plan, layout, wall.a);
+      const b = transformPoint(plan, layout, wall.b);
+      const angle = Math.atan2(b.y - a.y, b.x - a.x);
+      const center = transformPoint(plan, layout, opening.centerM);
+      const width = opening.widthM * 1000 / layout.denominator;
+      const bottom = opening.bottomM * openingScaleZ;
+      const height = Math.min(layout.heightMm - bottom, opening.heightM * openingScaleZ);
+      if (height <= 0.05 || width <= 0.05) return null;
+      return transforms.translate(
+        [center.x, center.y, 0],
+        transforms.rotateZ(
+          angle,
+          primitives.cuboid({
+            size: [width, thickness + 0.8, height + 0.05],
+            center: [0, 0, floorHeight + bottom + height / 2],
+          }),
+        ),
+      ) as Geom3;
+    })
+    .filter((geometry): geometry is Geom3 => Boolean(geometry));
+  if (cutters.length) solid = booleans.subtract(solid, ...cutters) as Geom3;
+  return solid;
+}
+
+function interiorClipGeometry(plan: MetricPlan, layout: PrintLayout, floorHeight: number) {
+  if (plan.outlineM.length < 3) return null;
+  const points = transformedOutlinePoints(plan, layout);
+  const floorOverlap = wallFloorOverlap(floorHeight);
+  return transforms.translate(
+    [0, 0, floorHeight - floorOverlap],
+    extrusions.extrudeLinear(
+      { height: layout.heightMm + floorOverlap },
+      primitives.polygon({ points }),
+    ),
+  ) as Geom3;
+}
+
+function furnitureGeometry(
+  plan: MetricPlan,
+  layout: PrintLayout,
+  options: PrintExportOptions,
+  object: MetricPlan["furniture"][number],
+  floorHeight: number,
+  preservePosition = true,
+) {
   if (object.type === "door" || object.type === "window") return null;
-  const center = transformPoint(plan, layout, { x: object.x, y: object.y });
+  const center = preservePosition ? transformPoint(plan, layout, { x: object.x, y: object.y }) : { x: 0, y: 0 };
   const scale = 1000 / layout.denominator;
   const width = Math.max(0.5, object.widthM * scale);
   const depth = Math.max(0.5, object.heightM * scale);
-  const height = options.heightMode === "low"
+  const height = options.exportScope === "room" && options.heightMode === "low"
     ? Math.max(0.6, object.modelHeightM / plan.settings.wallHeightM * options.lowProfileHeightMm)
     : Math.max(0.6, object.modelHeightM * scale);
   const angle = ((layout.rotated ? object.rotation + 90 : object.rotation) * Math.PI) / 180;
-  const box = (size: [number, number, number], offset: [number, number, number]) =>
-    primitives.cuboid({ size, center: [offset[0], offset[1], floorHeight + offset[2]] });
-  const pieces: Geom3[] = [];
-
-  if (object.type === "bed") {
-    pieces.push(box([width, depth, height * 0.35], [0, 0, height * 0.175]));
-    pieces.push(box([width, depth * 0.08, height * 0.75], [0, -depth * 0.46, height * 0.375]));
-  } else if (object.type === "sofa") {
-    pieces.push(box([width, depth, height * 0.45], [0, 0, height * 0.225]));
-    pieces.push(box([width, depth * 0.18, height * 0.55], [0, -depth * 0.4, height * 0.65]));
-    pieces.push(box([width * 0.12, depth, height * 0.55], [-width * 0.44, 0, height * 0.36]));
-    pieces.push(box([width * 0.12, depth, height * 0.55], [width * 0.44, 0, height * 0.36]));
-  } else if (object.type === "table" || object.type === "desk" || object.type === "chair") {
-    const topHeight = object.type === "chair" ? height * 0.52 : height * 0.92;
-    pieces.push(box([width, depth, Math.max(0.5, height * 0.1)], [0, 0, topHeight]));
-    [-1, 1].forEach((sx) => [-1, 1].forEach((sy) => {
-      pieces.push(box([Math.max(0.5, width * 0.1), Math.max(0.5, depth * 0.1), topHeight], [sx * width * 0.4, sy * depth * 0.4, topHeight / 2]));
-    }));
-    if (object.type === "chair") pieces.push(box([width, depth * 0.12, height * 0.5], [0, -depth * 0.44, height * 0.75]));
-  } else if (object.type === "shelf") {
-    pieces.push(box([width, depth * 0.18, height], [0, -depth * 0.4, height / 2]));
-    for (let level = 0; level < 4; level += 1) pieces.push(box([width, depth, Math.max(0.4, height * 0.035)], [0, 0, (height * level) / 3]));
-  } else {
-    pieces.push(box([width, depth, height], [0, 0, height / 2]));
-  }
-
-  let geometry = booleans.union(...pieces) as Geom3;
+  const style = options.furnitureStyles?.[object.id] ?? "classic";
+  const pieces = buildFurnitureParts(object.type, width, depth, height, style).map((part) =>
+    primitives.cuboid({
+      size: part.size,
+      center: [part.center[0], part.center[1], floorHeight + part.center[2]],
+    }) as Geom3,
+  );
+  if (!pieces.length) return null;
+  let geometry = pieces.length === 1 ? pieces[0] : booleans.union(...pieces) as Geom3;
   geometry = transforms.rotateZ(-angle, geometry) as Geom3;
   geometry = transforms.translate([center.x, center.y, 0], geometry) as Geom3;
   return geometry;
 }
 
-function floorGeometry(plan: MetricPlan, layout: PrintLayout, thickness: number) {
-  const points = plan.outlineM.map((point) => {
-    const transformed = transformPoint(plan, layout, point);
-    return [transformed.x, transformed.y] as [number, number];
-  });
+function floorGeometry(
+  plan: MetricPlan,
+  layout: PrintLayout,
+  options: PrintExportOptions,
+  thickness: number,
+) {
+  const points = transformedOutlinePoints(plan, layout);
   if (points.length < 3) return null;
-  return extrusions.extrudeLinear({ height: thickness }, primitives.polygon({ points })) as Geom3;
+  const outerWallThickness = physicalWallThickness(plan, layout, options, "outer");
+  const footprint = createExpandedFootprint(points, outerWallThickness / 2);
+  return extrusions.extrudeLinear({ height: thickness }, footprint) as Geom3;
 }
 
 function lineIntersectionAtX(a: Point, b: Point, x: number) {
@@ -211,36 +306,99 @@ function chooseCuts(plan: MetricPlan, layout: PrintLayout, axis: "x" | "y", coun
   return cuts;
 }
 
-function connectorShape(axis: "x" | "y", seam: number, along: number, direction: 1 | -1, floorHeight: number, wallHeight: number, thickness: number, clearance = 0) {
-  const depth = 3 + clearance;
-  const width = Math.max(4, thickness * 3) + clearance * 2;
-  const height = floorHeight > 0 ? Math.max(0.5, floorHeight * 0.62) + clearance : Math.max(1, Math.min(4, wallHeight * 0.45)) + clearance;
-  const z = floorHeight > 0 ? height / 2 : Math.max(height / 2, wallHeight * 0.28);
-  const small = primitives.cuboid({
-    size: axis === "x" ? [depth * 0.72, width * 0.82, height * 0.82] : [width * 0.82, depth * 0.72, height * 0.82],
-    center: axis === "x"
-      ? [seam + direction * depth * 0.65, along, z]
-      : [along, seam + direction * depth * 0.65, z],
+function slideConnectorShape(
+  seam: number,
+  along: number,
+  axis: "x" | "y",
+  forward: Point,
+  floorHeight: number,
+  wallHeight: number,
+  thickness: number,
+  clearance = 0,
+) {
+  const origin = axis === "x" ? { x: seam, y: along } : { x: along, y: seam };
+  const side = { x: -forward.y, y: forward.x };
+  const depth = Math.max(2.2, Math.min(4.5, thickness * 1.4));
+  const headWidth = Math.max(0.35, Math.min(thickness * 0.58, thickness - 0.4));
+  const neckWidth = Math.max(0.25, headWidth * 0.62);
+  const slotExtra = clearance;
+  const start = {
+    x: origin.x - forward.x * slotExtra * 0.5,
+    y: origin.y - forward.y * slotExtra * 0.5,
+  };
+  const end = {
+    x: origin.x + forward.x * (depth + slotExtra * 0.5),
+    y: origin.y + forward.y * (depth + slotExtra * 0.5),
+  };
+  const neckHalf = (neckWidth + slotExtra) / 2;
+  const headHalf = (headWidth + slotExtra) / 2;
+  const profile = primitives.polygon({
+    points: [
+      [start.x - side.x * neckHalf, start.y - side.y * neckHalf],
+      [end.x - side.x * headHalf, end.y - side.y * headHalf],
+      [end.x + side.x * headHalf, end.y + side.y * headHalf],
+      [start.x + side.x * neckHalf, start.y + side.y * neckHalf],
+    ],
   });
-  const large = primitives.cuboid({
-    size: axis === "x" ? [depth * 0.35, width, height] : [width, depth * 0.35, height],
-    center: axis === "x"
-      ? [seam + direction * depth * 0.15, along, z]
-      : [along, seam + direction * depth * 0.15, z],
-  });
-  return hulls.hull(small, large) as Geom3;
+  const verticalClearance = clearance > 0 ? Math.max(0.05, clearance / 2) : 0;
+  return transforms.translate(
+    [0, 0, floorHeight - verticalClearance],
+    extrusions.extrudeLinear(
+      { height: wallHeight + verticalClearance * 2 },
+      profile,
+    ),
+  ) as Geom3;
 }
 
-function connectorPositions(plan: MetricPlan, layout: PrintLayout, axis: "x" | "y", seam: number, spanStart: number, spanEnd: number, includeFloor: boolean) {
-  if (includeFloor) return [spanStart + (spanEnd - spanStart) / 3, spanStart + (spanEnd - spanStart) * 2 / 3];
-  const hits: number[] = [];
+function wallConnectorHits(
+  plan: MetricPlan,
+  layout: PrintLayout,
+  options: PrintExportOptions,
+  axis: "x" | "y",
+  seam: number,
+  spanStart: number,
+  spanEnd: number,
+) {
+  const hits: Array<{ along: number; forward: Point; thickness: number }> = [];
   plan.walls.forEach((wall) => {
     const a = transformPoint(plan, layout, wall.a);
     const b = transformPoint(plan, layout, wall.b);
     const hit = axis === "x" ? lineIntersectionAtX(a, b, seam) : lineIntersectionAtY(a, b, seam);
-    if (hit !== null && hit > spanStart + 2 && hit < spanEnd - 2) hits.push(hit);
+    if (hit === null || hit <= spanStart + 2 || hit >= spanEnd - 2) return;
+    const hitPoint = axis === "x" ? { x: seam, y: hit } : { x: hit, y: seam };
+    if (
+      Math.min(
+        Math.hypot(hitPoint.x - a.x, hitPoint.y - a.y),
+        Math.hypot(hitPoint.x - b.x, hitPoint.y - b.y),
+      ) < 6
+    ) return;
+    const crossesOpening = plan.openings
+      .filter((opening) => opening.wallId === wall.id)
+      .some((opening) => {
+        const center = transformPoint(plan, layout, opening.centerM);
+        return Math.hypot(center.x - hitPoint.x, center.y - hitPoint.y) <
+          opening.widthM * 500 / layout.denominator + 1;
+      });
+    if (crossesOpening) return;
+    const wallDx = b.x - a.x;
+    const wallDy = b.y - a.y;
+    const wallLength = Math.hypot(wallDx, wallDy);
+    if (wallLength < 0.01) return;
+    let forward = { x: wallDx / wallLength, y: wallDy / wallLength };
+    if ((axis === "x" ? forward.x : forward.y) < 0) {
+      forward = { x: -forward.x, y: -forward.y };
+    }
+    const realThickness =
+      (wall.kind === "outer" ? plan.settings.outerWallThicknessM : plan.settings.innerWallThicknessM) *
+      1000 /
+      layout.denominator;
+    const thickness = options.thicknessMode === "slim" ? options.slimWallThicknessMm : realThickness;
+    hits.push({ along: hit, forward, thickness: Math.max(0.8, thickness) });
   });
-  return hits.slice(0, 3);
+  return hits
+    .sort((a, b) => a.along - b.along)
+    .filter((hit, index, all) => index === 0 || Math.abs(hit.along - all[index - 1].along) > 0.5)
+    .slice(0, 4);
 }
 
 function geometryHasVolume(geometry: Geom3) {
@@ -251,21 +409,77 @@ function geometryHasVolume(geometry: Geom3) {
   }
 }
 
+function completeExport(parts: NamedGeometry[], options: PrintExportOptions) {
+  const furnitureOnly = options.exportScope === "furniture";
+  const baseName = furnitureOnly ? "furniture-models" : "room-plan";
+  report(82, `Serializing ${parts.length} object${parts.length === 1 ? "" : "s"}`);
+  if (options.format === "3mf") {
+    const bytes = asBytes(serialize3mf({ unit: "millimeter", compress: true, metadata: true }, ...parts));
+    ctx.postMessage({ type: "complete", filename: `${baseName}.3mf`, mimeType: "model/3mf", buffer: bytes.buffer }, [bytes.buffer]);
+  } else if (parts.length === 1) {
+    const bytes = asBytes(serializeStl({ binary: true }, parts[0]));
+    ctx.postMessage({ type: "complete", filename: `${baseName}.stl`, mimeType: "model/stl", buffer: bytes.buffer }, [bytes.buffer]);
+  } else {
+    const files: Record<string, Uint8Array> = {};
+    parts.forEach((part, index) => {
+      const label = part.name?.replace(/[^a-z0-9_-]+/gi, "-").replace(/^-|-$/g, "") || `${baseName}-${index + 1}`;
+      files[`${String(index + 1).padStart(2, "0")}-${label}.stl`] = asBytes(serializeStl({ binary: true }, part));
+    });
+    const zipped = zipSync(files, { level: 6 });
+    ctx.postMessage({ type: "complete", filename: `${baseName}-stl.zip`, mimeType: "application/zip", buffer: zipped.buffer }, [zipped.buffer]);
+  }
+}
+
 ctx.onmessage = (event: MessageEvent<RequestMessage>) => {
   try {
     const { plan, options, layout } = event.data;
     optionsForScore = options;
+    if (options.exportScope === "furniture") {
+      report(12, "Building furniture models");
+      const parts = plan.furniture
+        .map((object, index) => {
+          const geometry = furnitureGeometry(plan, layout, options, object, 0, false);
+          if (!geometry) return null;
+          const named = colors.colorize([0.4, 0.55, 0.75, 1], geometry) as NamedGeometry;
+          named.name = `Furniture ${String(index + 1).padStart(2, "0")} - ${object.label}`;
+          return named;
+        })
+        .filter((geometry): geometry is NamedGeometry => Boolean(geometry));
+      if (!parts.length) throw new Error("Add at least one printable furniture object.");
+      completeExport(parts, options);
+      return;
+    }
     report(5, "Building walls");
     const floorHeight = options.includeFloor ? options.floorThicknessMm : 0;
     const structural: Geom3[] = [];
-    const floor = options.includeFloor ? floorGeometry(plan, layout, floorHeight) : null;
+    const floor = options.includeFloor ? floorGeometry(plan, layout, options, floorHeight) : null;
     if (floor) structural.push(floor);
-    plan.walls.forEach((wall) => {
-      const geometry = wallGeometry(plan, layout, options, wall, floorHeight);
-      if (geometry) structural.push(geometry);
-    });
+    const ring = outerWallRing(plan, layout, options, floorHeight);
+    const fallbackOuterWalls = ring
+      ? []
+      : plan.walls
+          .filter((wall) => wall.kind === "outer")
+          .map((wall) => wallGeometry(plan, layout, options, wall, floorHeight))
+          .filter((geometry): geometry is Geom3 => Boolean(geometry));
+    const innerWalls = plan.walls
+      .filter((wall) => wall.kind === "inner")
+      .map((wall) => wallGeometry(plan, layout, options, wall, floorHeight))
+      .filter((geometry): geometry is Geom3 => Boolean(geometry));
+    let innerJoined =
+      innerWalls.length > 1 ? booleans.union(...innerWalls) as Geom3 : innerWalls[0];
+    const interiorClip = interiorClipGeometry(plan, layout, floorHeight);
+    if (innerJoined && interiorClip) {
+      innerJoined = booleans.intersect(innerJoined, interiorClip) as Geom3;
+    }
+    const wallSolids = [
+      ...(ring ? [ring] : fallbackOuterWalls),
+      ...(innerJoined ? [innerJoined] : []),
+    ];
+    if (wallSolids.length) {
+      structural.push(wallSolids.length === 1 ? wallSolids[0] : booleans.union(...wallSolids) as Geom3);
+    }
     if (!structural.length) throw new Error("The plan has no printable walls or floor.");
-    let base = booleans.union(...structural) as Geom3;
+    let base = structural.length === 1 ? structural[0] : booleans.union(...structural) as Geom3;
 
     report(24, "Building furniture");
     const furniture = plan.furniture
@@ -291,32 +505,28 @@ ctx.onmessage = (event: MessageEvent<RequestMessage>) => {
         let piece = booleans.intersect(base, clip) as Geom3;
         if (!geometryHasVolume(piece)) continue;
 
-        const thickness = options.thicknessMode === "slim" ? options.slimWallThicknessMm : Math.max(
-          plan.settings.innerWallThicknessM * 1000 / layout.denominator,
-          0.8,
-        );
         if (column < layout.columns - 1) {
           const seam = x1;
-          connectorPositions(plan, layout, "x", seam, y0, y1, options.includeFloor).forEach((along) => {
-            piece = booleans.union(piece, connectorShape("x", seam, along, 1, floorHeight, layout.heightMm, thickness)) as Geom3;
+          wallConnectorHits(plan, layout, options, "x", seam, y0, y1).forEach((hit) => {
+            piece = booleans.union(piece, slideConnectorShape(seam, hit.along, "x", hit.forward, floorHeight, layout.heightMm, hit.thickness)) as Geom3;
           });
         }
         if (column > 0) {
           const seam = x0;
-          connectorPositions(plan, layout, "x", seam, y0, y1, options.includeFloor).forEach((along) => {
-            piece = booleans.subtract(piece, connectorShape("x", seam, along, 1, floorHeight, layout.heightMm, thickness, options.connectorClearanceMm)) as Geom3;
+          wallConnectorHits(plan, layout, options, "x", seam, y0, y1).forEach((hit) => {
+            piece = booleans.subtract(piece, slideConnectorShape(seam, hit.along, "x", hit.forward, floorHeight, layout.heightMm, hit.thickness, options.connectorClearanceMm)) as Geom3;
           });
         }
         if (row < layout.rows - 1) {
           const seam = y1;
-          connectorPositions(plan, layout, "y", seam, x0, x1, options.includeFloor).forEach((along) => {
-            piece = booleans.union(piece, connectorShape("y", seam, along, 1, floorHeight, layout.heightMm, thickness)) as Geom3;
+          wallConnectorHits(plan, layout, options, "y", seam, x0, x1).forEach((hit) => {
+            piece = booleans.union(piece, slideConnectorShape(seam, hit.along, "y", hit.forward, floorHeight, layout.heightMm, hit.thickness)) as Geom3;
           });
         }
         if (row > 0) {
           const seam = y0;
-          connectorPositions(plan, layout, "y", seam, x0, x1, options.includeFloor).forEach((along) => {
-            piece = booleans.subtract(piece, connectorShape("y", seam, along, 1, floorHeight, layout.heightMm, thickness, options.connectorClearanceMm)) as Geom3;
+          wallConnectorHits(plan, layout, options, "y", seam, x0, x1).forEach((hit) => {
+            piece = booleans.subtract(piece, slideConnectorShape(seam, hit.along, "y", hit.forward, floorHeight, layout.heightMm, hit.thickness, options.connectorClearanceMm)) as Geom3;
           });
         }
         const named = colors.colorize([0.88, 0.91, 0.95, 1], piece) as NamedGeometry;
@@ -334,21 +544,7 @@ ctx.onmessage = (event: MessageEvent<RequestMessage>) => {
     }
     if (!parts.length) throw new Error("No printable geometry was generated.");
 
-    report(82, `Serializing ${parts.length} object${parts.length === 1 ? "" : "s"}`);
-    if (options.format === "3mf") {
-      const bytes = asBytes(serialize3mf({ unit: "millimeter", compress: true, metadata: true }, ...parts));
-      ctx.postMessage({ type: "complete", filename: "room-plan.3mf", mimeType: "model/3mf", buffer: bytes.buffer }, [bytes.buffer]);
-    } else if (parts.length === 1) {
-      const bytes = asBytes(serializeStl({ binary: true }, parts[0]));
-      ctx.postMessage({ type: "complete", filename: "room-plan.stl", mimeType: "model/stl", buffer: bytes.buffer }, [bytes.buffer]);
-    } else {
-      const files: Record<string, Uint8Array> = {};
-      parts.forEach((part, index) => {
-        files[`room-plan-${String(index + 1).padStart(2, "0")}.stl`] = asBytes(serializeStl({ binary: true }, part));
-      });
-      const zipped = zipSync(files, { level: 6 });
-      ctx.postMessage({ type: "complete", filename: "room-plan-stl-parts.zip", mimeType: "application/zip", buffer: zipped.buffer }, [zipped.buffer]);
-    }
+    completeExport(parts, options);
   } catch (error) {
     ctx.postMessage({ type: "error", message: error instanceof Error ? error.message : "Could not generate the print file." });
   }

@@ -56,6 +56,7 @@ export type MetricPlan = {
 
 export type PrintExportOptions = {
   format: "3mf" | "stl";
+  exportScope: "room" | "furniture";
   heightMode: "scaled" | "low";
   lowProfileHeightMm: number;
   thicknessMode: "real" | "slim";
@@ -63,6 +64,7 @@ export type PrintExportOptions = {
   includeFloor: boolean;
   floorThicknessMm: number;
   furnitureMode: "none" | "fused" | "loose";
+  furnitureStyles: Record<string, FurniturePrintStyle>;
   bedWidthMm: number;
   bedDepthMm: number;
   bedMarginMm: number;
@@ -74,6 +76,7 @@ export type PrintExportOptions = {
 
 export const defaultPrintOptions: PrintExportOptions = {
   format: "3mf",
+  exportScope: "room",
   heightMode: "scaled",
   lowProfileHeightMm: 10,
   thicknessMode: "real",
@@ -81,6 +84,7 @@ export const defaultPrintOptions: PrintExportOptions = {
   includeFloor: true,
   floorThicknessMm: 2,
   furnitureMode: "none",
+  furnitureStyles: {},
   bedWidthMm: 220,
   bedDepthMm: 220,
   bedMarginMm: 5,
@@ -89,6 +93,8 @@ export const defaultPrintOptions: PrintExportOptions = {
   autoRotate: true,
   connectorClearanceMm: 0.2,
 };
+
+export type FurniturePrintStyle = "classic" | "modern" | "print-friendly";
 
 export type PrintLayout = {
   denominator: number;

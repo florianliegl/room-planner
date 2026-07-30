@@ -1,8 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Download, Printer, X } from "lucide-react";
+import { furniturePrintStyles } from "./furnitureGeometry";
 import { calculatePrintLayout } from "./metricPlan";
-import { defaultPrintOptions, type MetricPlan, type PrintExportOptions } from "./plannerTypes";
+import {
+  defaultPrintOptions,
+  type FurniturePrintStyle,
+  type MetricPlan,
+  type PrintExportOptions,
+} from "./plannerTypes";
 
+const FurnitureStylePreview = lazy(() => import("./FurnitureStylePreview"));
 const storageKey = "room-planner-print-options-v1";
 const bedPresets = [
   { label: "180 × 180 mm", width: 180, depth: 180 },
@@ -20,7 +27,12 @@ type Props = {
 
 function loadOptions() {
   try {
-    return { ...defaultPrintOptions, ...JSON.parse(localStorage.getItem(storageKey) ?? "{}") } as PrintExportOptions;
+    const saved = JSON.parse(localStorage.getItem(storageKey) ?? "{}") as Partial<PrintExportOptions>;
+    return {
+      ...defaultPrintOptions,
+      ...saved,
+      furnitureStyles: { ...defaultPrintOptions.furnitureStyles, ...saved.furnitureStyles },
+    } as PrintExportOptions;
   } catch {
     return defaultPrintOptions;
   }
@@ -31,9 +43,19 @@ export default function PrintExportDialog({ plan, calibrated, onClose }: Props) 
   const [progress, setProgress] = useState(0);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
+  const printableFurniture = useMemo(
+    () => plan.furniture.filter((object) => object.type !== "door" && object.type !== "window"),
+    [plan.furniture],
+  );
+  const [selectedFurnitureId, setSelectedFurnitureId] = useState(printableFurniture[0]?.id ?? "");
   const workerRef = useRef<Worker | null>(null);
   const layout = useMemo(() => calculatePrintLayout(plan, options), [plan, options]);
-  const canExport = calibrated && plan.outlineM.length >= 3 && plan.walls.length >= 3 && !status;
+  const selectedFurniture = printableFurniture.find((object) => object.id === selectedFurnitureId) ?? printableFurniture[0];
+  const canExport = calibrated && !status && (
+    options.exportScope === "furniture"
+      ? printableFurniture.length > 0
+      : plan.outlineM.length >= 3 && plan.walls.length >= 3
+  );
 
   useEffect(() => {
     localStorage.setItem(storageKey, JSON.stringify(options));
@@ -41,8 +63,20 @@ export default function PrintExportDialog({ plan, calibrated, onClose }: Props) 
 
   useEffect(() => () => workerRef.current?.terminate(), []);
 
+  useEffect(() => {
+    if (printableFurniture.length && !printableFurniture.some((object) => object.id === selectedFurnitureId)) {
+      setSelectedFurnitureId(printableFurniture[0].id);
+    }
+  }, [printableFurniture, selectedFurnitureId]);
+
   const patch = <K extends keyof PrintExportOptions>(key: K, value: PrintExportOptions[K]) =>
     setOptions((current) => ({ ...current, [key]: value }));
+
+  const setFurnitureStyle = (id: string, style: FurniturePrintStyle) =>
+    setOptions((current) => ({
+      ...current,
+      furnitureStyles: { ...current.furnitureStyles, [id]: style },
+    }));
 
   const startExport = () => {
     setError("");
@@ -89,7 +123,16 @@ export default function PrintExportDialog({ plan, calibrated, onClose }: Props) 
     setProgress(0);
   };
 
-  const selectedPreset = bedPresets.find((preset) => preset.width === options.bedWidthMm && preset.depth === options.bedDepthMm);
+  const selectedPreset = bedPresets.find(
+    (preset) => preset.width === options.bedWidthMm && preset.depth === options.bedDepthMm,
+  );
+  const showFurnitureStyles =
+    (options.exportScope === "furniture" || options.furnitureMode !== "none") &&
+    printableFurniture.length > 0 &&
+    selectedFurniture;
+  const selectedStyle = selectedFurniture
+    ? options.furnitureStyles[selectedFurniture.id] ?? "classic"
+    : "classic";
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !status && onClose()}>
@@ -104,42 +147,65 @@ export default function PrintExportDialog({ plan, calibrated, onClose }: Props) 
 
         <div className="print-dialog-body">
           <section className="print-preview">
-            <div className={`print-bed ${layout.rotated ? "rotated" : ""}`} style={{ aspectRatio: `${options.bedWidthMm} / ${options.bedDepthMm}` }}>
-              {Array.from({ length: layout.partCount }, (_, index) => {
-                const column = index % layout.columns;
-                const row = Math.floor(index / layout.columns);
-                return (
-                  <div
-                    key={index}
-                    className="print-part"
-                    style={{
-                      left: `${(column / layout.columns) * 100}%`,
-                      top: `${(row / layout.rows) * 100}%`,
-                      width: `${100 / layout.columns}%`,
-                      height: `${100 / layout.rows}%`,
-                    }}
-                  >
-                    R{row + 1}C{column + 1}
-                  </div>
-                );
-              })}
-            </div>
+            {options.exportScope === "room" ? (
+              <div className={`print-bed ${layout.rotated ? "rotated" : ""}`} style={{ aspectRatio: `${options.bedWidthMm} / ${options.bedDepthMm}` }}>
+                {Array.from({ length: layout.partCount }, (_, index) => {
+                  const column = index % layout.columns;
+                  const row = Math.floor(index / layout.columns);
+                  return (
+                    <div
+                      key={index}
+                      className="print-part"
+                      style={{
+                        left: `${(column / layout.columns) * 100}%`,
+                        top: `${(row / layout.rows) * 100}%`,
+                        width: `${100 / layout.columns}%`,
+                        height: `${100 / layout.rows}%`,
+                      }}
+                    >
+                      R{row + 1}C{column + 1}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : selectedFurniture ? (
+              <Suspense fallback={<div className="furniture-preview-loading">Loading 3D preview…</div>}>
+                <FurnitureStylePreview object={selectedFurniture} style={selectedStyle} />
+              </Suspense>
+            ) : (
+              <div className="furniture-preview-loading">Add furniture to preview and export it.</div>
+            )}
+
             <div className="print-summary-grid">
               <div><span>Scale</span><strong>1:{layout.denominator.toFixed(layout.denominator < 10 ? 1 : 0)}</strong></div>
-              <div><span>Size</span><strong>{layout.widthMm.toFixed(1)} × {layout.depthMm.toFixed(1)} mm</strong></div>
+              <div><span>{options.exportScope === "furniture" ? "Largest footprint" : "Size"}</span><strong>{layout.widthMm.toFixed(1)} × {layout.depthMm.toFixed(1)} mm</strong></div>
               <div><span>Height</span><strong>{layout.heightMm.toFixed(1)} mm</strong></div>
-              <div><span>Objects</span><strong>{layout.partCount} room part{layout.partCount === 1 ? "" : "s"}</strong></div>
+              <div><span>Objects</span><strong>{layout.partCount} {options.exportScope === "furniture" ? "furniture model" : "room part"}{layout.partCount === 1 ? "" : "s"}</strong></div>
             </div>
-            {layout.rotated && <p className="info-note">The model is rotated 90° to use the bed more efficiently.</p>}
-            {layout.partCount > 1 && options.format === "3mf" && (
+            {layout.rotated && <p className="info-note">The models are rotated 90° to use the bed more efficiently.</p>}
+            {options.exportScope === "room" && layout.partCount > 1 && options.format === "3mf" && (
               <p className="info-note">All numbered pieces are stored as named objects in one 3MF. Isolate and center each piece in your slicer before printing.</p>
             )}
+            {options.exportScope === "furniture" && options.format === "3mf" && (
+              <p className="info-note">Each furniture model is a separate named 3MF object. Isolate and center the objects you want to print in your slicer.</p>
+            )}
+            {options.exportScope === "furniture" && options.format === "stl" && layout.partCount > 1 && (
+              <p className="info-note">The download is a ZIP containing one numbered STL file per furniture model.</p>
+            )}
             {!calibrated && <p className="warning-note">Calibrate the plan scale before creating a print file.</p>}
-            {plan.outlineM.length < 3 && <p className="warning-note">Close the flat outline before creating a print file.</p>}
+            {options.exportScope === "room" && plan.outlineM.length < 3 && <p className="warning-note">Close the flat outline before creating a print file.</p>}
             {layout.warnings.map((warning) => <p className="warning-note" key={warning}>{warning}</p>)}
           </section>
 
           <section className="print-settings">
+            <div className="setting-group">
+              <h3>Export content</h3>
+              <div className="segmented">
+                <button className={options.exportScope === "room" ? "active" : ""} onClick={() => patch("exportScope", "room")}>Room model</button>
+                <button className={options.exportScope === "furniture" ? "active" : ""} onClick={() => patch("exportScope", "furniture")}>Furniture only</button>
+              </div>
+            </div>
+
             <div className="setting-group">
               <h3>Output</h3>
               <div className="segmented">
@@ -148,37 +214,81 @@ export default function PrintExportDialog({ plan, calibrated, onClose }: Props) 
               </div>
             </div>
 
-            <div className="setting-group">
-              <h3>Model height</h3>
-              <div className="segmented">
-                <button className={options.heightMode === "scaled" ? "active" : ""} onClick={() => patch("heightMode", "scaled")}>Scaled walls</button>
-                <button className={options.heightMode === "low" ? "active" : ""} onClick={() => patch("heightMode", "low")}>Low profile</button>
-              </div>
-              {options.heightMode === "low" && <NumberField label="Wall height mm" value={options.lowProfileHeightMm} min={2} step={1} onChange={(value) => patch("lowProfileHeightMm", value)} />}
-            </div>
+            {options.exportScope === "room" && (
+              <>
+                <div className="setting-group">
+                  <h3>Model height</h3>
+                  <div className="segmented">
+                    <button className={options.heightMode === "scaled" ? "active" : ""} onClick={() => patch("heightMode", "scaled")}>Scaled walls</button>
+                    <button className={options.heightMode === "low" ? "active" : ""} onClick={() => patch("heightMode", "low")}>Low profile</button>
+                  </div>
+                  {options.heightMode === "low" && <NumberField label="Wall height mm" value={options.lowProfileHeightMm} min={2} step={1} onChange={(value) => patch("lowProfileHeightMm", value)} />}
+                </div>
 
-            <div className="setting-group">
-              <h3>Wall thickness</h3>
-              <div className="segmented">
-                <button className={options.thicknessMode === "real" ? "active" : ""} onClick={() => patch("thicknessMode", "real")}>Real scaled</button>
-                <button className={options.thicknessMode === "slim" ? "active" : ""} onClick={() => patch("thicknessMode", "slim")}>Material saver</button>
-              </div>
-              {options.thicknessMode === "slim" && <NumberField label="Wall thickness mm" value={options.slimWallThicknessMm} min={0.4} step={0.1} onChange={(value) => patch("slimWallThicknessMm", value)} />}
-            </div>
+                <div className="setting-group">
+                  <h3>Wall thickness</h3>
+                  <div className="segmented">
+                    <button
+                      className={options.thicknessMode === "real" ? "active" : ""}
+                      onClick={() => patch("thicknessMode", "real")}
+                      title="Uses each drawn wall as its centerline and extends the scaled thickness equally to both sides"
+                    >
+                      Real scaled
+                    </button>
+                    <button className={options.thicknessMode === "slim" ? "active" : ""} onClick={() => patch("thicknessMode", "slim")}>Material saver</button>
+                  </div>
+                  {options.thicknessMode === "real" && (
+                    <p className="setting-help">Drawn wall lines are centerlines. The real scaled thickness extends equally to both sides.</p>
+                  )}
+                  {options.thicknessMode === "slim" && <NumberField label="Wall thickness mm" value={options.slimWallThicknessMm} min={0.4} step={0.1} onChange={(value) => patch("slimWallThicknessMm", value)} />}
+                </div>
 
-            <div className="setting-group compact-grid">
-              <label className="check-row"><input type="checkbox" checked={options.includeFloor} onChange={(event) => patch("includeFloor", event.target.checked)} /> Include floor</label>
-              {options.includeFloor && <NumberField label="Floor mm" value={options.floorThicknessMm} min={0.4} step={0.2} onChange={(value) => patch("floorThicknessMm", value)} />}
-            </div>
+                <div className="setting-group compact-grid">
+                  <label className="check-row"><input type="checkbox" checked={options.includeFloor} onChange={(event) => patch("includeFloor", event.target.checked)} /> Include floor</label>
+                  {options.includeFloor && <NumberField label="Floor mm" value={options.floorThicknessMm} min={0.4} step={0.2} onChange={(value) => patch("floorThicknessMm", value)} />}
+                </div>
+              </>
+            )}
 
             <div className="setting-group">
               <h3>Furniture</h3>
-              <select value={options.furnitureMode} onChange={(event) => patch("furnitureMode", event.target.value as PrintExportOptions["furnitureMode"])}>
-                <option value="none">Do not export furniture</option>
-                <option value="loose">Separate loose scale models</option>
-                <option value="fused">Fuse furniture into room</option>
-              </select>
+              {options.exportScope === "room" ? (
+                <select value={options.furnitureMode} onChange={(event) => patch("furnitureMode", event.target.value as PrintExportOptions["furnitureMode"])}>
+                  <option value="none">Do not export furniture</option>
+                  <option value="loose">Separate loose scale models</option>
+                  <option value="fused">Fuse furniture into room</option>
+                </select>
+              ) : (
+                <p className="setting-help">Every furniture item is exported as its own scale model. Doors and windows remain part of the room and are not included.</p>
+              )}
             </div>
+
+            {showFurnitureStyles && selectedFurniture && (
+              <div className="setting-group furniture-style-editor">
+                <h3>Furniture style</h3>
+                <select value={selectedFurniture.id} onChange={(event) => setSelectedFurnitureId(event.target.value)}>
+                  {printableFurniture.map((object) => <option key={object.id} value={object.id}>{object.label}</option>)}
+                </select>
+                <div className="segmented furniture-style-options">
+                  {furniturePrintStyles.map((style) => (
+                    <button
+                      key={style.id}
+                      className={selectedStyle === style.id ? "active" : ""}
+                      onClick={() => setFurnitureStyle(selectedFurniture.id, style.id)}
+                      title={style.description}
+                    >
+                      {style.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="setting-help">{furniturePrintStyles.find((style) => style.id === selectedStyle)?.description}</p>
+                {options.exportScope === "room" && (
+                  <Suspense fallback={<div className="furniture-preview-loading compact">Loading 3D preview…</div>}>
+                    <FurnitureStylePreview object={selectedFurniture} style={selectedStyle} />
+                  </Suspense>
+                )}
+              </div>
+            )}
 
             <div className="setting-group">
               <h3>Print bed</h3>
@@ -209,9 +319,13 @@ export default function PrintExportDialog({ plan, calibrated, onClose }: Props) 
               <label className="check-row"><input type="checkbox" checked={options.autoRotate} onChange={(event) => patch("autoRotate", event.target.checked)} /> Auto-rotate for best fit</label>
             </div>
 
-            {layout.partCount > 1 && (
+            {options.exportScope === "room" && layout.partCount > 1 && (
               <div className="setting-group">
-                <h3>Friction connectors</h3>
+                <h3>Slide-in wall connectors</h3>
+                <p className="setting-help">
+                  Split walls receive a full-height trapezoidal tongue and matching groove. Lower the tongue piece
+                  into the groove from above. Floors meet at a plain seam and do not receive connectors.
+                </p>
                 <NumberField label="Clearance mm" value={options.connectorClearanceMm} min={0} step={0.05} onChange={(value) => patch("connectorClearanceMm", value)} />
               </div>
             )}

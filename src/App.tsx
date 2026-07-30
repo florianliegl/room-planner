@@ -60,6 +60,7 @@ type ProjectFile = {
   scaleMPerPx: number | null;
   scaleSource: string;
   wallSnapEnabled?: boolean;
+  showRealWallThickness?: boolean;
   outerOutline?: Point[];
   innerWalls?: WallSegment[];
   rooms: Room[];
@@ -515,6 +516,7 @@ export default function App() {
   const [showDimensions, setShowDimensions] = useState(true);
   const [showGrid, setShowGrid] = useState(true);
   const [wallSnapEnabled, setWallSnapEnabled] = useState(true);
+  const [showRealWallThickness, setShowRealWallThickness] = useState(false);
   const [construction, setConstruction] = useState<ConstructionSettings>(defaultConstructionSettings);
   const [workspaceMode, setWorkspaceMode] = useState<"2d" | "3d">("2d");
   const [printDialogOpen, setPrintDialogOpen] = useState(false);
@@ -613,6 +615,7 @@ export default function App() {
     scaleMPerPx,
     scaleSource,
     wallSnapEnabled,
+    showRealWallThickness,
     outerOutline,
     innerWalls,
     rooms,
@@ -674,6 +677,7 @@ export default function App() {
         setScaleMPerPx(project.scaleMPerPx);
         setScaleSource(project.scaleSource);
         setWallSnapEnabled(project.wallSnapEnabled ?? true);
+        setShowRealWallThickness(project.showRealWallThickness ?? false);
         setOuterOutline(project.outerOutline ?? []);
         setInnerWalls(project.innerWalls ?? []);
         setRooms(repairDefaultRoomIdentities(project.rooms));
@@ -691,7 +695,7 @@ export default function App() {
   useEffect(() => {
     if (!hydrated) return;
     window.localStorage.setItem(autosaveKey, JSON.stringify(projectSnapshot()));
-  }, [hydrated, background, scaleMPerPx, scaleSource, wallSnapEnabled, outerOutline, innerWalls, rooms, objects, construction, viewport]);
+  }, [hydrated, background, scaleMPerPx, scaleSource, wallSnapEnabled, showRealWallThickness, outerOutline, innerWalls, rooms, objects, construction, viewport]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -820,6 +824,7 @@ export default function App() {
       setScaleMPerPx(project.scaleMPerPx);
       setScaleSource(project.scaleSource);
       setWallSnapEnabled(project.wallSnapEnabled ?? true);
+      setShowRealWallThickness(project.showRealWallThickness ?? false);
       setOuterOutline(project.outerOutline ?? []);
       setInnerWalls(project.innerWalls ?? []);
       const repairedRooms = repairDefaultRoomIdentities(project.rooms);
@@ -841,6 +846,7 @@ export default function App() {
           scaleMPerPx: project.scaleMPerPx,
           scaleSource: project.scaleSource,
           wallSnapEnabled: project.wallSnapEnabled ?? true,
+          showRealWallThickness: project.showRealWallThickness ?? false,
           outerOutline: project.outerOutline ?? [],
           innerWalls: project.innerWalls ?? [],
           rooms: repairedRooms,
@@ -1487,6 +1493,7 @@ export default function App() {
     setRooms([]);
     setObjects([]);
     setConstruction(defaultConstructionSettings);
+    setShowRealWallThickness(false);
     setDraftPoints([]);
     setPointerWorld(null);
     setScaleLine(null);
@@ -1613,6 +1620,14 @@ export default function App() {
             <label title="Snap wall point edits to nearby wall corners and segments">
               <input type="checkbox" checked={wallSnapEnabled} onChange={(event) => setWallSnapEnabled(event.target.checked)} />
               Wall snap
+            </label>
+            <label title="Show configured outer and inner wall thicknesses around the drawn centerlines">
+              <input
+                type="checkbox"
+                checked={showRealWallThickness}
+                onChange={(event) => setShowRealWallThickness(event.target.checked)}
+              />
+              Real wall thickness
             </label>
           </div>
           {draftPoints.length > 0 && (
@@ -1808,6 +1823,9 @@ export default function App() {
                 scale={effectiveScale}
                 calibrated={Boolean(scaleMPerPx)}
                 showDimensions={showDimensions}
+                showRealWallThickness={showRealWallThickness}
+                construction={construction}
+                zoom={viewport.zoom}
                 onSelect={handleWallPointerDown}
               />
               <WallHandles
@@ -1950,6 +1968,7 @@ export default function App() {
             <Suspense fallback={<div className="three-loading">Preparing 3D view…</div>}>
               <ThreeDView
                 plan={metricPlan}
+                showRealWallThickness={showRealWallThickness}
                 selectedObjectId={selection?.kind === "object" ? selection.id : null}
                 onSelectObject={(id) => {
                   setSelection({ kind: "object", id });
@@ -2134,7 +2153,7 @@ export default function App() {
               />
             </label>
           </div>
-          <p className="empty">Used by the live 3D view and real-thickness print exports.</p>
+          <p className="empty">Drawn walls are centerlines. Thickness extends equally to both sides in 3D and print exports.</p>
         </section>
 
         <section className="panel">
@@ -2242,6 +2261,9 @@ function WallLayer({
   scale,
   calibrated,
   showDimensions,
+  showRealWallThickness,
+  construction,
+  zoom,
   onSelect,
 }: {
   walls: WallSegment[];
@@ -2250,6 +2272,9 @@ function WallLayer({
   scale: number;
   calibrated: boolean;
   showDimensions: boolean;
+  showRealWallThickness: boolean;
+  construction: ConstructionSettings;
+  zoom: number;
   onSelect: (event: PointerEvent<SVGLineElement>, wall: WallSegment) => void;
 }) {
   return (
@@ -2257,14 +2282,26 @@ function WallLayer({
       {walls.map((wall) => {
         const mid = midpoint(wall.a, wall.b);
         const wallOpenings = openings.filter((opening) => opening.wallId === wall.id);
+        const thicknessM =
+          wall.kind === "outer" ? construction.outerWallThicknessM : construction.innerWallThicknessM;
+        const thicknessScreenPx = (thicknessM / scale) * zoom;
+        const realThicknessStyle = showRealWallThickness ? { strokeWidth: thicknessScreenPx } : undefined;
+        const openingStyle = showRealWallThickness ? { strokeWidth: thicknessScreenPx + 2 } : undefined;
+        const hitStyle = showRealWallThickness
+          ? { strokeWidth: Math.max(26, thicknessScreenPx + 12) }
+          : undefined;
         return (
-          <g key={wall.id} className={`wall-segment ${wall.kind} ${selectedWallId === wall.id ? "selected" : ""}`}>
-            <line className="wall-hit" x1={wall.a.x} y1={wall.a.y} x2={wall.b.x} y2={wall.b.y} onPointerDown={(event) => onSelect(event, wall)} />
-            <line className="wall-visible" x1={wall.a.x} y1={wall.a.y} x2={wall.b.x} y2={wall.b.y} />
+          <g
+            key={wall.id}
+            className={`wall-segment ${wall.kind} ${showRealWallThickness ? "real-thickness" : ""} ${selectedWallId === wall.id ? "selected" : ""}`}
+          >
+            <line className="wall-hit" style={hitStyle} x1={wall.a.x} y1={wall.a.y} x2={wall.b.x} y2={wall.b.y} onPointerDown={(event) => onSelect(event, wall)} />
+            <line className="wall-visible" style={realThicknessStyle} x1={wall.a.x} y1={wall.a.y} x2={wall.b.x} y2={wall.b.y} />
             {wallOpenings.map((opening) => (
               <line
                 key={opening.objectId}
                 className="wall-opening-fade"
+                style={openingStyle}
                 x1={opening.a.x}
                 y1={opening.a.y}
                 x2={opening.b.x}
