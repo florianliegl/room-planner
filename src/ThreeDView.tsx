@@ -14,6 +14,7 @@ import { connectedWallExtensions, counterClockwise, createContinuousWallRing } f
 type Props = {
   plan: MetricPlan;
   showRealWallThickness: boolean;
+  northAngleDeg: number;
   selectedObjectId: string | null;
   onSelectObject: (id: string) => void;
 };
@@ -298,7 +299,14 @@ function canWalkTo(plan: MetricPlan, point: Point) {
   });
 }
 
-export default function ThreeDView({ plan, showRealWallThickness, selectedObjectId, onSelectObject }: Props) {
+function formatTime(hours: number) {
+  const totalMinutes = Math.round(hours * 60);
+  const hour = Math.floor(totalMinutes / 60) % 24;
+  const minute = totalMinutes % 60;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+export default function ThreeDView({ plan, showRealWallThickness, northAngleDeg, selectedObjectId, onSelectObject }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const planRef = useRef(plan);
   const selectRef = useRef(onSelectObject);
@@ -306,12 +314,17 @@ export default function ThreeDView({ plan, showRealWallThickness, selectedObject
   const modeRef = useRef<"orbit" | "walk">("orbit");
   const [mode, setMode] = useState<"orbit" | "walk">("orbit");
   const [error, setError] = useState("");
+  const [sunEnabled, setSunEnabled] = useState(false);
+  const [sunTime, setSunTime] = useState(12);
+  const [sunPlaying, setSunPlaying] = useState(false);
   const runtimeRef = useRef<{
     scene: THREE.Scene;
     camera: THREE.PerspectiveCamera;
     orbit: OrbitControls;
     pointer: PointerLockControls;
     content: THREE.Group;
+    hemisphere: THREE.HemisphereLight;
+    sunlight: THREE.DirectionalLight;
   } | null>(null);
 
   planRef.current = plan;
@@ -352,12 +365,22 @@ export default function ThreeDView({ plan, showRealWallThickness, selectedObject
     orbit.update();
     const pointer = new PointerLockControls(camera, renderer.domElement);
 
-    scene.add(new THREE.HemisphereLight("#ffffff", "#64748b", 1.55));
+    const hemisphere = new THREE.HemisphereLight("#ffffff", "#64748b", 1.55);
+    scene.add(hemisphere);
     const sunlight = new THREE.DirectionalLight("#fff7ed", 2.1);
     sunlight.position.set(-8, 14, 7);
     sunlight.castShadow = true;
     sunlight.shadow.mapSize.set(2048, 2048);
+    const shadowExtent = Math.max(12, size * 1.5);
+    sunlight.shadow.camera.left = -shadowExtent;
+    sunlight.shadow.camera.right = shadowExtent;
+    sunlight.shadow.camera.top = shadowExtent;
+    sunlight.shadow.camera.bottom = -shadowExtent;
+    sunlight.shadow.camera.near = 0.1;
+    sunlight.shadow.camera.far = Math.max(60, size * 8);
+    sunlight.target.position.set(centerX, 0, centerZ);
     scene.add(sunlight);
+    scene.add(sunlight.target);
     const ground = createBox(Math.max(40, size * 4), 0.04, Math.max(40, size * 4), "#cbd5e1", centerX, -0.04, centerZ);
     scene.add(ground);
     const grid = new THREE.GridHelper(Math.max(40, size * 4), 80, "#94a3b8", "#cbd5e1");
@@ -365,7 +388,7 @@ export default function ThreeDView({ plan, showRealWallThickness, selectedObject
     scene.add(grid);
     const content = new THREE.Group();
     scene.add(content);
-    runtimeRef.current = { scene, camera, orbit, pointer, content };
+    runtimeRef.current = { scene, camera, orbit, pointer, content, hemisphere, sunlight };
 
     const raycaster = new THREE.Raycaster();
     const pointerPosition = new THREE.Vector2();
@@ -448,6 +471,63 @@ export default function ThreeDView({ plan, showRealWallThickness, selectedObject
   useEffect(() => {
     const runtime = runtimeRef.current;
     if (!runtime) return;
+    const centerX = (plan.boundsM.minX + plan.boundsM.maxX) / 2;
+    const centerZ = (plan.boundsM.minY + plan.boundsM.maxY) / 2;
+    const size = Math.max(plan.boundsM.width, plan.boundsM.depth, 4);
+
+    runtime.sunlight.target.position.set(centerX, 0, centerZ);
+    if (!sunEnabled) {
+      runtime.sunlight.visible = true;
+      runtime.sunlight.color.set("#fff7ed");
+      runtime.sunlight.intensity = 2.1;
+      runtime.sunlight.position.set(centerX - size * 1.2, size * 2, centerZ + size);
+      runtime.hemisphere.intensity = 1.55;
+      runtime.scene.background = new THREE.Color("#dbeafe");
+      runtime.scene.fog = new THREE.Fog("#dbeafe", 35, 90);
+      return;
+    }
+
+    const dayProgress = (sunTime - 6) / 12;
+    const elevationFactor = Math.max(0, Math.sin(dayProgress * Math.PI));
+    const elevation = elevationFactor * (Math.PI / 3);
+    const solarBearing = 90 + dayProgress * 180;
+    const planBearing = ((northAngleDeg + solarBearing) * Math.PI) / 180;
+    const distance = Math.max(24, size * 5);
+    const horizontalDistance = Math.cos(elevation) * distance;
+
+    runtime.sunlight.position.set(
+      centerX + Math.sin(planBearing) * horizontalDistance,
+      Math.max(0.05, Math.sin(elevation) * distance),
+      centerZ - Math.cos(planBearing) * horizontalDistance,
+    );
+    runtime.sunlight.visible = elevationFactor > 0.001;
+    runtime.sunlight.color.set(elevationFactor < 0.25 ? "#fb923c" : "#fff7ed");
+    runtime.sunlight.intensity = 0.3 + elevationFactor * 3.2;
+    runtime.hemisphere.intensity = 0.18 + elevationFactor * 0.72;
+    const skyColor = elevationFactor > 0.08 ? "#bfdbfe" : "#172554";
+    runtime.scene.background = new THREE.Color(skyColor);
+    runtime.scene.fog = new THREE.Fog(skyColor, 35, 90);
+  }, [northAngleDeg, plan.boundsM, sunEnabled, sunTime]);
+
+  useEffect(() => {
+    if (!sunPlaying) return;
+    if (sunTime >= 21) setSunTime(5);
+    const interval = window.setInterval(() => {
+      setSunTime((current) => {
+        const next = current + 0.08;
+        if (next >= 21) {
+          window.setTimeout(() => setSunPlaying(false), 0);
+          return 21;
+        }
+        return next;
+      });
+    }, 50);
+    return () => window.clearInterval(interval);
+  }, [sunPlaying]);
+
+  useEffect(() => {
+    const runtime = runtimeRef.current;
+    if (!runtime) return;
     runtime.content.traverse((child) => {
       if (child instanceof THREE.Mesh) {
         child.geometry.dispose();
@@ -522,7 +602,42 @@ export default function ThreeDView({ plan, showRealWallThickness, selectedObject
         <button onClick={() => setCameraPreset("iso")}>Isometric</button>
         <button onClick={() => setCameraPreset("reset")}>Reset</button>
         <button className={mode === "walk" ? "active" : ""} onClick={toggleWalk}>{mode === "walk" ? "Exit walk" : "Walkthrough"}</button>
+        <button
+          className={sunEnabled ? "active" : ""}
+          onClick={() => {
+            setSunEnabled((enabled) => !enabled);
+            if (sunEnabled) setSunPlaying(false);
+          }}
+        >
+          Sun
+        </button>
       </div>
+      {sunEnabled && (
+        <div className="sun-controls" aria-label="Sun simulation controls">
+          <div className="sun-controls-header">
+            <strong>Sun study</strong>
+            <span>{formatTime(sunTime)}</span>
+          </div>
+          <input
+            type="range"
+            min="5"
+            max="21"
+            step="0.05"
+            value={sunTime}
+            aria-label="Time of day"
+            onChange={(event) => {
+              setSunPlaying(false);
+              setSunTime(Number(event.target.value));
+            }}
+          />
+          <div className="sun-controls-footer">
+            <span>05:00</span>
+            <button onClick={() => setSunPlaying((playing) => !playing)}>{sunPlaying ? "Pause" : "Play day"}</button>
+            <span>21:00</span>
+          </div>
+          <small>Idealized east-to-west path · north {Math.round(((northAngleDeg % 360) + 360) % 360)}°</small>
+        </div>
+      )}
       {mode === "walk" && (
         <>
           <div className="walk-hint">Click the view for mouse look · WASD to move · Esc releases the mouse</div>

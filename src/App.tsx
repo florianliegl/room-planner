@@ -3,6 +3,7 @@ import {
   BedDouble,
   Box,
   BringToFront,
+  Compass,
   Download,
   FileDown,
   FileUp,
@@ -66,6 +67,7 @@ type ProjectFile = {
   rooms: Room[];
   objects: Furniture[];
   construction?: ConstructionSettings;
+  northAngleDeg?: number;
   view: Viewport;
 };
 
@@ -459,6 +461,10 @@ function normalizeDegrees(degrees: number) {
   return ((((degrees + 180) % 360) + 360) % 360) - 180;
 }
 
+function normalizeCompassDegrees(degrees: number) {
+  return ((degrees % 360) + 360) % 360;
+}
+
 function repairDefaultRoomIdentities(rooms: Room[]) {
   const defaultNamePattern = /^Room\s+\d+$/;
   const defaultRooms = rooms.filter((room) => defaultNamePattern.test(room.name));
@@ -518,6 +524,7 @@ export default function App() {
   const [wallSnapEnabled, setWallSnapEnabled] = useState(true);
   const [showRealWallThickness, setShowRealWallThickness] = useState(false);
   const [construction, setConstruction] = useState<ConstructionSettings>(defaultConstructionSettings);
+  const [northAngleDeg, setNorthAngleDeg] = useState(0);
   const [workspaceMode, setWorkspaceMode] = useState<"2d" | "3d">("2d");
   const [printDialogOpen, setPrintDialogOpen] = useState(false);
   const [hydrated, setHydrated] = useState(false);
@@ -621,6 +628,7 @@ export default function App() {
     rooms,
     objects,
     construction,
+    northAngleDeg,
     view: viewport,
   });
 
@@ -683,6 +691,7 @@ export default function App() {
         setRooms(repairDefaultRoomIdentities(project.rooms));
         setObjects(normalizeFurniture(project.objects));
         setConstruction(project.construction ?? defaultConstructionSettings);
+        setNorthAngleDeg(normalizeCompassDegrees(project.northAngleDeg ?? 0));
         setViewport(project.view);
       }
     } catch {
@@ -695,7 +704,7 @@ export default function App() {
   useEffect(() => {
     if (!hydrated) return;
     window.localStorage.setItem(autosaveKey, JSON.stringify(projectSnapshot()));
-  }, [hydrated, background, scaleMPerPx, scaleSource, wallSnapEnabled, showRealWallThickness, outerOutline, innerWalls, rooms, objects, construction, viewport]);
+  }, [hydrated, background, scaleMPerPx, scaleSource, wallSnapEnabled, showRealWallThickness, outerOutline, innerWalls, rooms, objects, construction, northAngleDeg, viewport]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -832,6 +841,7 @@ export default function App() {
       const normalizedObjects = normalizeFurniture(project.objects);
       setObjects(normalizedObjects);
       setConstruction(project.construction ?? defaultConstructionSettings);
+      setNorthAngleDeg(normalizeCompassDegrees(project.northAngleDeg ?? 0));
       setViewport(project.view);
       setDraftPoints([]);
       setPointerWorld(null);
@@ -852,6 +862,7 @@ export default function App() {
           rooms: repairedRooms,
           objects: normalizedObjects,
           construction: project.construction ?? defaultConstructionSettings,
+          northAngleDeg: normalizeCompassDegrees(project.northAngleDeg ?? 0),
           view: project.view,
         } satisfies ProjectFile),
       );
@@ -1493,6 +1504,7 @@ export default function App() {
     setRooms([]);
     setObjects([]);
     setConstruction(defaultConstructionSettings);
+    setNorthAngleDeg(0);
     setShowRealWallThickness(false);
     setDraftPoints([]);
     setPointerWorld(null);
@@ -1776,6 +1788,10 @@ export default function App() {
         {workspaceMode === "2d" ? (
         <div className="stage" ref={stageRef} onWheel={handleWheel}>
           <canvas ref={canvasRef} className="background-canvas" />
+          <div className="compass-indicator" title={`North points ${Math.round(normalizeCompassDegrees(northAngleDeg))}° clockwise from the top of the plan`}>
+            <Compass size={34} />
+            <span className="compass-needle" style={{ transform: `rotate(${northAngleDeg}deg)` }}><b>N</b></span>
+          </div>
           <svg
             className="overlay"
             width={stageSize.width}
@@ -1969,6 +1985,7 @@ export default function App() {
               <ThreeDView
                 plan={metricPlan}
                 showRealWallThickness={showRealWallThickness}
+                northAngleDeg={northAngleDeg}
                 selectedObjectId={selection?.kind === "object" ? selection.id : null}
                 onSelectObject={(id) => {
                   setSelection({ kind: "object", id });
@@ -2117,6 +2134,34 @@ export default function App() {
               </button>
             </div>
           )}
+        </section>
+
+        <section className="panel">
+          <h2>Orientation</h2>
+          <label className="field">
+            <span>North direction</span>
+            <input
+              type="range"
+              min="0"
+              max="359"
+              step="1"
+              value={normalizeCompassDegrees(northAngleDeg)}
+              onChange={(event) => setNorthAngleDeg(Number(event.target.value))}
+            />
+          </label>
+          <div className="field-row orientation-row">
+            <input
+              type="number"
+              min="0"
+              max="359"
+              step="1"
+              value={Math.round(normalizeCompassDegrees(northAngleDeg))}
+              aria-label="North direction in degrees"
+              onChange={(event) => setNorthAngleDeg(normalizeCompassDegrees(Number(event.target.value) || 0))}
+            />
+            <button onClick={() => setNorthAngleDeg(0)} title="Point north toward the top of the plan">Reset</button>
+          </div>
+          <p className="empty">0° points north to the top of the plan; angles rotate clockwise. This drives the 3D sun direction.</p>
         </section>
 
         <section className="panel">

@@ -388,10 +388,61 @@ label.tool-button input {
 }
 
 .three-toolbar,
+.sun-controls,
 .walk-hint,
 .walk-touch {
   position: absolute;
   z-index: 8;
+}
+
+.compass-indicator {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 7;
+  display: grid;
+  width: 54px;
+  height: 54px;
+  place-items: center;
+  border: 1px solid rgb(148 163 184 / 0.7);
+  border-radius: 50%;
+  background: rgb(255 255 255 / 0.9);
+  box-shadow: 0 8px 20px rgb(15 23 42 / 0.12);
+  color: #64748b;
+  pointer-events: none;
+}
+
+.compass-needle {
+  position: absolute;
+  top: 7px;
+  left: 26px;
+  width: 2px;
+  height: 20px;
+  border-radius: 2px;
+  background: #dc2626;
+  transform-origin: 1px 20px;
+}
+
+.compass-needle::after {
+  position: absolute;
+  top: -2px;
+  left: -3px;
+  width: 0;
+  height: 0;
+  border-right: 4px solid transparent;
+  border-bottom: 7px solid #dc2626;
+  border-left: 4px solid transparent;
+  content: "";
+  transform: translateY(-4px);
+}
+
+.compass-needle b {
+  position: absolute;
+  top: -18px;
+  left: 50%;
+  color: #b91c1c;
+  font-size: 10px;
+  transform: translateX(-50%);
 }
 
 .three-toolbar {
@@ -413,6 +464,66 @@ label.tool-button input {
   padding: 6px 10px;
   font-size: 12px;
   font-weight: 750;
+}
+
+.sun-controls {
+  top: 66px;
+  left: 12px;
+  width: min(280px, calc(100% - 24px));
+  padding: 10px 12px;
+  border: 1px solid rgb(148 163 184 / 0.7);
+  border-radius: 9px;
+  background: rgb(255 255 255 / 0.92);
+  box-shadow: 0 12px 30px rgb(15 23 42 / 0.14);
+  backdrop-filter: blur(10px);
+}
+
+.sun-controls-header,
+.sun-controls-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.sun-controls-header {
+  margin-bottom: 7px;
+  font-size: 13px;
+}
+
+.sun-controls-header span {
+  color: #b45309;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+}
+
+.sun-controls input[type="range"] {
+  width: 100%;
+  accent-color: #f59e0b;
+}
+
+.sun-controls-footer {
+  color: #64748b;
+  font-size: 10px;
+}
+
+.sun-controls-footer button {
+  min-height: 30px;
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.sun-controls small {
+  display: block;
+  margin-top: 7px;
+  color: #64748b;
+  font-size: 10px;
+  text-align: center;
+}
+
+.orientation-row {
+  margin-top: 8px;
 }
 
 .walk-hint {
@@ -1166,9 +1277,7 @@ label.tool-button input {
     max-height: 22dvh;
   }
 
-  .mobile-drawer-details .inspector .panel:nth-of-type(3),
-  .mobile-drawer-details .inspector .panel:nth-of-type(4),
-  .mobile-drawer-details .inspector .panel:nth-of-type(5) {
+  .mobile-drawer-details .inspector .panel:nth-of-type(n + 3) {
     display: none;
   }
 
