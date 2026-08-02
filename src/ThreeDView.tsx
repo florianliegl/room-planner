@@ -255,7 +255,7 @@ function buildOpenings(plan: MetricPlan) {
     const source = plan.furniture.find((item) => item.id === opening.objectId);
     if (!source) return;
     if (opening.type === "door") {
-      const leaf = createBox(opening.widthM * 0.96, opening.heightM * 0.96, 0.045, source.color, 0, opening.heightM * 0.48);
+      const leaf = createBox(opening.widthM, opening.heightM, 0.045, source.color, 0, opening.heightM / 2);
       leaf.position.x = opening.centerM.x;
       leaf.position.z = opening.centerM.y;
       leaf.rotation.y = (-opening.rotation * Math.PI) / 180;
@@ -272,6 +272,25 @@ function buildOpenings(plan: MetricPlan) {
     }
   });
   return group;
+}
+
+function buildInvisibleCeiling(plan: MetricPlan) {
+  if (plan.outlineM.length < 3) return null;
+  const shape = new THREE.Shape();
+  shape.moveTo(plan.outlineM[0].x, plan.outlineM[0].y);
+  plan.outlineM.slice(1).forEach((point) => shape.lineTo(point.x, point.y));
+  shape.closePath();
+  const material = new THREE.MeshBasicMaterial({
+    colorWrite: false,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  const ceiling = new THREE.Mesh(new THREE.ShapeGeometry(shape), material);
+  ceiling.position.y = plan.settings.wallHeightM;
+  ceiling.rotation.x = Math.PI / 2;
+  ceiling.castShadow = true;
+  ceiling.receiveShadow = false;
+  return ceiling;
 }
 
 function pointSegmentDistance(point: Point, wall: WallSegment) {
@@ -332,6 +351,19 @@ function createSunRay(start: THREE.Vector3, end: THREE.Vector3) {
   ray.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.normalize());
   ray.renderOrder = 3;
   return ray;
+}
+
+function pointInPlan(point: Point, polygon: Point[]) {
+  let inside = false;
+  for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index, index += 1) {
+    const a = polygon[index];
+    const b = polygon[previous];
+    const crosses =
+      a.y > point.y !== b.y > point.y &&
+      point.x < ((b.x - a.x) * (point.y - a.y)) / (b.y - a.y) + a.x;
+    if (crosses) inside = !inside;
+  }
+  return inside;
 }
 
 export default function ThreeDView({ plan, showRealWallThickness, northAngleDeg, selectedObjectId, onSelectObject }: Props) {
@@ -581,7 +613,19 @@ export default function ThreeDView({ plan, showRealWallThickness, northAngleDeg,
     const travelDirection = target.clone().sub(runtime.sunlight.position).normalize();
     const rayLength = Math.max(6, Math.max(plan.boundsM.width, plan.boundsM.depth) * 1.8);
     plan.openings
-      .filter((opening) => opening.type === "window")
+      .filter((opening) => {
+        if (opening.type !== "window") return false;
+        const wall = plan.walls.find((candidate) => candidate.id === opening.wallId);
+        if (!wall || wall.kind !== "outer" || plan.outlineM.length < 3) return false;
+        const horizontalTravel = new THREE.Vector2(travelDirection.x, travelDirection.z);
+        if (horizontalTravel.lengthSq() < 0.000001) return false;
+        horizontalTravel.normalize();
+        const insideSample = {
+          x: opening.centerM.x + horizontalTravel.x * Math.max(0.25, plan.settings.outerWallThicknessM),
+          y: opening.centerM.y + horizontalTravel.y * Math.max(0.25, plan.settings.outerWallThicknessM),
+        };
+        return pointInPlan(insideSample, plan.outlineM);
+      })
       .forEach((opening) => {
         const wallAngle = (opening.rotation * Math.PI) / 180;
         const tangent = new THREE.Vector3(Math.cos(wallAngle), 0, Math.sin(wallAngle));
@@ -641,13 +685,17 @@ export default function ThreeDView({ plan, showRealWallThickness, northAngleDeg,
       floor.rotation.x = Math.PI / 2;
       floor.receiveShadow = true;
       runtime.content.add(floor);
+      if (sunEnabled) {
+        const ceiling = buildInvisibleCeiling(plan);
+        if (ceiling) runtime.content.add(ceiling);
+      }
     }
     runtime.content.add(buildWalls(plan, showRealWallThickness));
     runtime.content.add(buildOpenings(plan));
     plan.furniture
       .filter((object) => object.type !== "door" && object.type !== "window")
       .forEach((object) => runtime.content.add(buildFurnitureModel(object, object.id === selectedObjectId)));
-  }, [plan, selectedObjectId, showRealWallThickness]);
+  }, [plan, selectedObjectId, showRealWallThickness, sunEnabled]);
 
   const setCameraPreset = (preset: "top" | "iso" | "reset") => {
     const runtime = runtimeRef.current;
@@ -754,7 +802,7 @@ export default function ThreeDView({ plan, showRealWallThickness, northAngleDeg,
           </div>
           <small>Idealized east-to-west path · north {Math.round(((northAngleDeg % 360) + 360) % 360)}°</small>
           {showSunRays && plan.openings.every((opening) => opening.type !== "window") && (
-            <small className="sun-rays-empty">Add a window to see rays entering the room.</small>
+            <small className="sun-rays-empty">Add an exterior window to see rays entering the room.</small>
           )}
         </div>
       )}
