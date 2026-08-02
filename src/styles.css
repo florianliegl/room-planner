@@ -387,6 +387,21 @@ label.tool-button input {
   touch-action: none;
 }
 
+.sun-orb {
+  position: absolute;
+  z-index: 4;
+  width: 34px;
+  height: 34px;
+  border: 2px solid rgb(255 255 255 / 0.75);
+  border-radius: 50%;
+  background: #fbbf24;
+  box-shadow:
+    0 0 18px 7px rgb(251 191 36 / 0.58),
+    0 0 48px 18px rgb(253 230 138 / 0.3);
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+}
+
 .three-toolbar,
 .sun-controls,
 .walk-hint,
@@ -520,6 +535,11 @@ label.tool-button input {
   color: #64748b;
   font-size: 10px;
   text-align: center;
+}
+
+.sun-controls .sun-rays-empty {
+  color: #b45309;
+  font-weight: 700;
 }
 
 .orientation-row {

@@ -266,6 +266,7 @@ function buildOpenings(plan: MetricPlan) {
       pane.position.x = opening.centerM.x;
       pane.position.z = opening.centerM.y;
       pane.rotation.y = (-opening.rotation * Math.PI) / 180;
+      pane.castShadow = false;
       tagObject(pane, source.id);
       group.add(pane);
     }
@@ -306,6 +307,33 @@ function formatTime(hours: number) {
   return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 }
 
+function disposeGroup(group: THREE.Group) {
+  group.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return;
+    child.geometry.dispose();
+    const materials = Array.isArray(child.material) ? child.material : [child.material];
+    materials.forEach((material) => material.dispose());
+  });
+  group.clear();
+}
+
+function createSunRay(start: THREE.Vector3, end: THREE.Vector3) {
+  const direction = end.clone().sub(start);
+  const length = direction.length();
+  const material = new THREE.MeshBasicMaterial({
+    color: "#fde68a",
+    transparent: true,
+    opacity: 0.34,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  const ray = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.035, length, 8, 1, true), material);
+  ray.position.copy(start).add(end).multiplyScalar(0.5);
+  ray.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.normalize());
+  ray.renderOrder = 3;
+  return ray;
+}
+
 export default function ThreeDView({ plan, showRealWallThickness, northAngleDeg, selectedObjectId, onSelectObject }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const planRef = useRef(plan);
@@ -317,6 +345,7 @@ export default function ThreeDView({ plan, showRealWallThickness, northAngleDeg,
   const [sunEnabled, setSunEnabled] = useState(false);
   const [sunTime, setSunTime] = useState(12);
   const [sunPlaying, setSunPlaying] = useState(false);
+  const [showSunRays, setShowSunRays] = useState(false);
   const runtimeRef = useRef<{
     scene: THREE.Scene;
     camera: THREE.PerspectiveCamera;
@@ -325,6 +354,8 @@ export default function ThreeDView({ plan, showRealWallThickness, northAngleDeg,
     content: THREE.Group;
     hemisphere: THREE.HemisphereLight;
     sunlight: THREE.DirectionalLight;
+    sunVisual: THREE.Group;
+    sunRays: THREE.Group;
   } | null>(null);
 
   planRef.current = plan;
@@ -381,6 +412,27 @@ export default function ThreeDView({ plan, showRealWallThickness, northAngleDeg,
     sunlight.target.position.set(centerX, 0, centerZ);
     scene.add(sunlight);
     scene.add(sunlight.target);
+    const sunVisual = new THREE.Group();
+    const sunCore = new THREE.Mesh(
+      new THREE.SphereGeometry(Math.max(0.32, size * 0.055), 24, 16),
+      new THREE.MeshBasicMaterial({ color: "#fbbf24" }),
+    );
+    const sunGlow = new THREE.Mesh(
+      new THREE.SphereGeometry(Math.max(0.52, size * 0.085), 24, 16),
+      new THREE.MeshBasicMaterial({
+        color: "#fde68a",
+        transparent: true,
+        opacity: 0.22,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      }),
+    );
+    sunVisual.add(sunCore, sunGlow);
+    sunVisual.visible = false;
+    scene.add(sunVisual);
+    const sunRays = new THREE.Group();
+    sunRays.visible = false;
+    scene.add(sunRays);
     const ground = createBox(Math.max(40, size * 4), 0.04, Math.max(40, size * 4), "#cbd5e1", centerX, -0.04, centerZ);
     scene.add(ground);
     const grid = new THREE.GridHelper(Math.max(40, size * 4), 80, "#94a3b8", "#cbd5e1");
@@ -388,7 +440,7 @@ export default function ThreeDView({ plan, showRealWallThickness, northAngleDeg,
     scene.add(grid);
     const content = new THREE.Group();
     scene.add(content);
-    runtimeRef.current = { scene, camera, orbit, pointer, content, hemisphere, sunlight };
+    runtimeRef.current = { scene, camera, orbit, pointer, content, hemisphere, sunlight, sunVisual, sunRays };
 
     const raycaster = new THREE.Raycaster();
     const pointerPosition = new THREE.Vector2();
@@ -481,6 +533,7 @@ export default function ThreeDView({ plan, showRealWallThickness, northAngleDeg,
       runtime.sunlight.color.set("#fff7ed");
       runtime.sunlight.intensity = 2.1;
       runtime.sunlight.position.set(centerX - size * 1.2, size * 2, centerZ + size);
+      runtime.sunVisual.visible = false;
       runtime.hemisphere.intensity = 1.55;
       runtime.scene.background = new THREE.Color("#dbeafe");
       runtime.scene.fog = new THREE.Fog("#dbeafe", 35, 90);
@@ -501,6 +554,14 @@ export default function ThreeDView({ plan, showRealWallThickness, northAngleDeg,
       centerZ - Math.cos(planBearing) * horizontalDistance,
     );
     runtime.sunlight.visible = elevationFactor > 0.001;
+    runtime.sunVisual.visible = elevationFactor > 0.001;
+    const sunDisplayDistance = Math.max(4, size * 1.15);
+    runtime.sunVisual.position
+      .copy(runtime.sunlight.position)
+      .sub(runtime.sunlight.target.position)
+      .normalize()
+      .multiplyScalar(sunDisplayDistance)
+      .add(runtime.sunlight.target.position);
     runtime.sunlight.color.set(elevationFactor < 0.25 ? "#fb923c" : "#fff7ed");
     runtime.sunlight.intensity = 0.3 + elevationFactor * 3.2;
     runtime.hemisphere.intensity = 0.18 + elevationFactor * 0.72;
@@ -508,6 +569,40 @@ export default function ThreeDView({ plan, showRealWallThickness, northAngleDeg,
     runtime.scene.background = new THREE.Color(skyColor);
     runtime.scene.fog = new THREE.Fog(skyColor, 35, 90);
   }, [northAngleDeg, plan.boundsM, sunEnabled, sunTime]);
+
+  useEffect(() => {
+    const runtime = runtimeRef.current;
+    if (!runtime) return;
+    disposeGroup(runtime.sunRays);
+    runtime.sunRays.visible = sunEnabled && showSunRays && runtime.sunlight.visible;
+    if (!runtime.sunRays.visible) return;
+
+    const target = runtime.sunlight.target.position;
+    const travelDirection = target.clone().sub(runtime.sunlight.position).normalize();
+    const rayLength = Math.max(6, Math.max(plan.boundsM.width, plan.boundsM.depth) * 1.8);
+    plan.openings
+      .filter((opening) => opening.type === "window")
+      .forEach((opening) => {
+        const wallAngle = (opening.rotation * Math.PI) / 180;
+        const tangent = new THREE.Vector3(Math.cos(wallAngle), 0, Math.sin(wallAngle));
+        const samples = [
+          { across: -0.28, height: 0.28 },
+          { across: 0, height: 0.5 },
+          { across: 0.28, height: 0.72 },
+        ];
+        samples.forEach((sample) => {
+          const start = new THREE.Vector3(
+            opening.centerM.x,
+            opening.bottomM + opening.heightM * sample.height,
+            opening.centerM.y,
+          )
+            .addScaledVector(tangent, opening.widthM * sample.across)
+            .addScaledVector(travelDirection, 0.04);
+          const end = start.clone().addScaledVector(travelDirection, rayLength);
+          runtime.sunRays.add(createSunRay(start, end));
+        });
+      });
+  }, [northAngleDeg, plan.boundsM, plan.openings, showSunRays, sunEnabled, sunTime]);
 
   useEffect(() => {
     if (!sunPlaying) return;
@@ -591,9 +686,23 @@ export default function ThreeDView({ plan, showRealWallThickness, northAngleDeg,
     else movementRef.current.delete(key);
   };
 
+  const sunDayProgress = Math.min(1, Math.max(0, (sunTime - 6) / 12));
+  const sunElevationFactor = Math.max(0, Math.sin(sunDayProgress * Math.PI));
+  const sunAboveHorizon = sunTime >= 6 && sunTime <= 18;
+
   return (
     <div className="three-view" ref={hostRef}>
       {error && <div className="three-error">{error}</div>}
+      {sunEnabled && sunAboveHorizon && (
+        <div
+          className="sun-orb"
+          aria-label={`Sun position at ${formatTime(sunTime)}`}
+          style={{
+            left: `${15 + sunDayProgress * 70}%`,
+            top: `${10 + (1 - sunElevationFactor) * 35}%`,
+          }}
+        />
+      )}
       <div className="three-toolbar">
         <span className="three-thickness-status">
           {showRealWallThickness ? "Real wall thickness" : "Schematic walls"}
@@ -610,6 +719,14 @@ export default function ThreeDView({ plan, showRealWallThickness, northAngleDeg,
           }}
         >
           Sun
+        </button>
+        <button
+          className={showSunRays ? "active" : ""}
+          disabled={!sunEnabled}
+          onClick={() => setShowSunRays((visible) => !visible)}
+          title={sunEnabled ? "Show or hide rays entering through windows" : "Enable the sun first"}
+        >
+          Sun rays
         </button>
       </div>
       {sunEnabled && (
@@ -636,6 +753,9 @@ export default function ThreeDView({ plan, showRealWallThickness, northAngleDeg,
             <span>21:00</span>
           </div>
           <small>Idealized east-to-west path · north {Math.round(((northAngleDeg % 360) + 360) % 360)}°</small>
+          {showSunRays && plan.openings.every((opening) => opening.type !== "window") && (
+            <small className="sun-rays-empty">Add a window to see rays entering the room.</small>
+          )}
         </div>
       )}
       {mode === "walk" && (
